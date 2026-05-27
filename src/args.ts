@@ -40,7 +40,7 @@ export const HELP_TEXT = `\
 usage-fyi — publish your AI coding-agent usage as a shareable card
               (works with Claude Code, Codex, Gemini CLI, and more via ccusage)
 
-  bunx @usage-fyi/cli
+  bunx usage-fyi
 
 Options:
   --source <id>      Usage source adapter (default: ${DEFAULT_SOURCE})

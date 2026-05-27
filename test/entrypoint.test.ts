@@ -36,7 +36,7 @@ afterAll(async () => {
   delete process.env.USAGE_FYI_API_BASE;
 });
 
-describe("@usage-fyi/cli entrypoint", () => {
+describe("usage-fyi entrypoint", () => {
   it("run() with no args resolves without error", async () => {
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {

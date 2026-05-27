@@ -61,9 +61,9 @@ export async function run(argv: string[]): Promise<number> {
   if (!isAvailable) {
     console.error(`Error: ${parsed.source} failed to launch.`);
     console.error(
-      `  ccusage ships as a dependency of @usage-fyi/cli — this usually means a broken install.`,
+      `  ccusage ships as a dependency of usage-fyi — this usually means a broken install.`,
     );
-    console.error(`  Try reinstalling: bunx @usage-fyi/cli@latest`);
+    console.error(`  Try reinstalling: bunx usage-fyi@latest`);
     return EXIT.ADAPTER;
   }
 
