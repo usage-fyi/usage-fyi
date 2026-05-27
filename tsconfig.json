@@ -8,12 +8,10 @@
     "target": "ES2022",
     "module": "ESNext",
     "lib": ["ES2022", "DOM"],
-    "types": ["bun"],
+    "types": ["node"],
     "noEmit": true,
     "skipLibCheck": true,
-    "paths": {
-      "@usage-fyi/core": ["./src/core/index.ts"]
-    }
+    "resolveJsonModule": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

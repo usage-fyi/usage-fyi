@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from "vitest";
 import type { UsageAdapter } from "../src/adapters/types";
 import {
   DEFAULT_SOURCE,

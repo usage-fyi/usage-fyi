@@ -1,4 +1,5 @@
-import type { Snapshot, Style, DailyEntry } from "@usage-fyi/core";
+import { createServer, type ServerResponse } from "node:http";
+import type { Snapshot, Style, DailyEntry } from "./core/index.js";
 import { publishSnapshot, PublishError } from "./publish.js";
 import { resolvePublishError } from "./errors.js";
 import { openBrowser } from "./open.js";
@@ -1066,55 +1067,72 @@ export async function runPreview(
     resolveExit = r;
   });
 
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: async (req) => {
-      const url = new URL(req.url);
-      if (req.method === "GET" && url.pathname === "/") {
-        const port = server.port ?? 4317;
-        const html = buildHtml(snapshot, { apiBase, port });
-        return new Response(html, {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
-      }
-      if (req.method === "POST" && url.pathname === "/share") {
-        try {
-          const { id, manageKey } = await publishSnapshot(
-            snapshot,
-            _style,
-            apiBase,
-          );
-          const body: ShareResponse = {
-            id,
-            url: `${apiBase}/s/${id}`,
-            manageKey,
-          };
-          return Response.json(body);
-        } catch (err) {
-          if (err instanceof PublishError) {
-            const { message } = resolvePublishError(err.status, err.body);
-            const body: ErrorResponse = { error: message };
-            return Response.json(body, { status: err.status });
-          }
-          const msg =
-            err instanceof Error
-              ? "Could not reach usage.fyi — check your connection."
-              : String(err);
-          const body: ErrorResponse = { error: msg };
-          return Response.json(body, { status: 502 });
+  const writeJson = (
+    res: ServerResponse,
+    status: number,
+    body: unknown,
+  ): void => {
+    res.writeHead(status, {
+      "Content-Type": "application/json; charset=utf-8",
+    });
+    res.end(JSON.stringify(body));
+  };
+
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (req.method === "GET" && url.pathname === "/") {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 4317;
+      const html = buildHtml(snapshot, { apiBase, port });
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/share") {
+      try {
+        const { id, manageKey } = await publishSnapshot(
+          snapshot,
+          _style,
+          apiBase,
+        );
+        const body: ShareResponse = {
+          id,
+          url: `${apiBase}/s/${id}`,
+          manageKey,
+        };
+        writeJson(res, 200, body);
+      } catch (err) {
+        if (err instanceof PublishError) {
+          const { message } = resolvePublishError(err.status, err.body);
+          const body: ErrorResponse = { error: message };
+          writeJson(res, err.status, body);
+          return;
         }
+        const msg =
+          err instanceof Error
+            ? "Could not reach usage.fyi — check your connection."
+            : String(err);
+        const body: ErrorResponse = { error: msg };
+        writeJson(res, 502, body);
       }
-      return new Response("Not found", { status: 404 });
-    },
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found");
   });
 
-  const localUrl = `http://127.0.0.1:${server.port}`;
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  const localUrl = `http://127.0.0.1:${port}`;
   console.log(`Preview: ${localUrl}  (Ctrl-C to stop)`);
   await openBrowser(localUrl);
 
-  const shutdown = () => {
-    server.stop();
+  const shutdown = (): void => {
+    server.close();
     resolveExit();
   };
   process.once("SIGINT", shutdown);

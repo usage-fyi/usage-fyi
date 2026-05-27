@@ -1,13 +1,11 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from "vitest";
 import {
   ccusageAdapter,
   CollectError,
   parseCollectOutput,
 } from "../src/adapters/ccusage.js";
-import fixture from "./fixtures/ccusage-daily.json" with {
-  type: "json",
-};
-import type { RawCcusage } from "@usage-fyi/core";
+import fixture from "./fixtures/ccusage-daily.json" with { type: "json" };
+import type { RawCcusage } from "../src/core/index.js";
 
 const raw = fixture as unknown as RawCcusage;
 
@@ -100,15 +98,15 @@ describe("parseCollectOutput", () => {
   });
 
   it("throws CollectError on non-JSON stdout", () => {
-    expect(() =>
-      parseCollectOutput("not json at all", "", 0),
-    ).toThrow(CollectError);
+    expect(() => parseCollectOutput("not json at all", "", 0)).toThrow(
+      CollectError,
+    );
   });
 
   it("throws CollectError on truncated JSON", () => {
-    expect(() =>
-      parseCollectOutput('{"daily": [', "", 0),
-    ).toThrow(CollectError);
+    expect(() => parseCollectOutput('{"daily": [', "", 0)).toThrow(
+      CollectError,
+    );
   });
 
   it("returns parsed object on valid JSON (exit 0)", () => {

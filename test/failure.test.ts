@@ -5,15 +5,16 @@ import {
   describe,
   expect,
   it,
-  spyOn,
-} from "bun:test";
-import { slim } from "@usage-fyi/core";
-import type { RawCcusage } from "@usage-fyi/core";
+  vi,
+} from "vitest";
+import { slim } from "../src/core/index.js";
+import type { RawCcusage } from "../src/core/index.js";
 import { run } from "../src/index.js";
 import { registerAdapter } from "../src/adapters/registry.js";
 import type { UsageAdapter } from "../src/adapters/types.js";
 import { CollectError } from "../src/adapters/ccusage.js";
 import { EXIT, resolvePublishError } from "../src/errors.js";
+import { startTestServer, type TestServer } from "./_helpers/test-server.js";
 import fixture from "./fixtures/ccusage-daily.json" with {
   type: "json",
 };
@@ -59,10 +60,12 @@ async function runWith(
 ): Promise<{ code: number; errors: string[] }> {
   registerAdapter(adapter);
   const errors: string[] = [];
-  const errSpy = spyOn(console, "error").mockImplementation(
-    (...args: unknown[]) => errors.push(args.map(String).join(" ")),
-  );
-  const logSpy = spyOn(console, "log").mockImplementation(() => {});
+  const errSpy = vi
+    .spyOn(console, "error")
+    .mockImplementation((...args: unknown[]) =>
+      errors.push(args.map(String).join(" ")),
+    );
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   process.env.USAGE_FYI_API_BASE = apiBase;
   let code: number;
   try {
@@ -133,18 +136,12 @@ describe("resolvePublishError", () => {
 
 describe("adapter unavailable — no partial publish", () => {
   let requestCount = 0;
-  let server: ReturnType<typeof Bun.serve>;
+  let server: TestServer;
 
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      fetch: () => {
-        requestCount++;
-        return new Response(JSON.stringify({ id: "x", manageKey: "y" }), {
-          status: 201,
-          headers: { "Content-Type": "application/json" },
-        });
-      },
+  beforeAll(async () => {
+    server = await startTestServer(() => {
+      requestCount++;
+      return { status: 201, body: { id: "x", manageKey: "y" } };
     });
   });
 
@@ -152,33 +149,27 @@ describe("adapter unavailable — no partial publish", () => {
     requestCount = 0;
   });
 
-  afterAll(() => server.stop());
+  afterAll(async () => {
+    await server.stop();
+  });
 
   it("returns ADAPTER exit code", async () => {
-    const { code } = await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      unavailableAdapter,
-    );
+    const { code } = await runWith(["--no-open"], server.url, unavailableAdapter);
     expect(code).toBe(EXIT.ADAPTER);
   });
 
   it("makes no HTTP requests before exiting", async () => {
-    await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      unavailableAdapter,
-    );
+    await runWith(["--no-open"], server.url, unavailableAdapter);
     expect(requestCount).toBe(0);
   });
 
-  it("prints an actionable install message", async () => {
+  it("prints an actionable message", async () => {
     const { errors } = await runWith(
       ["--no-open"],
-      `http://localhost:${server.port}`,
+      server.url,
       unavailableAdapter,
     );
-    expect(errors.join("\n").toLowerCase()).toMatch(/install|not installed/);
+    expect(errors.join("\n").toLowerCase()).toMatch(/install|reinstall|launch/);
   });
 });
 
@@ -186,18 +177,12 @@ describe("adapter unavailable — no partial publish", () => {
 
 describe("collect error — no partial publish", () => {
   let requestCount = 0;
-  let server: ReturnType<typeof Bun.serve>;
+  let server: TestServer;
 
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      fetch: () => {
-        requestCount++;
-        return new Response(JSON.stringify({ id: "x", manageKey: "y" }), {
-          status: 201,
-          headers: { "Content-Type": "application/json" },
-        });
-      },
+  beforeAll(async () => {
+    server = await startTestServer(() => {
+      requestCount++;
+      return { status: 201, body: { id: "x", manageKey: "y" } };
     });
   });
 
@@ -205,30 +190,24 @@ describe("collect error — no partial publish", () => {
     requestCount = 0;
   });
 
-  afterAll(() => server.stop());
+  afterAll(async () => {
+    await server.stop();
+  });
 
   it("returns ADAPTER exit code", async () => {
-    const { code } = await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      collectFailAdapter,
-    );
+    const { code } = await runWith(["--no-open"], server.url, collectFailAdapter);
     expect(code).toBe(EXIT.ADAPTER);
   });
 
   it("makes no HTTP requests before exiting", async () => {
-    await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      collectFailAdapter,
-    );
+    await runWith(["--no-open"], server.url, collectFailAdapter);
     expect(requestCount).toBe(0);
   });
 
   it("prints the collect error message", async () => {
     const { errors } = await runWith(
       ["--no-open"],
-      `http://localhost:${server.port}`,
+      server.url,
       collectFailAdapter,
     );
     expect(errors.join("\n")).toContain("collecting");
@@ -238,78 +217,56 @@ describe("collect error — no partial publish", () => {
 // ─── publish failure — HTTP error ────────────────────────────────────────────
 
 describe("publish failure — rate_limited (429)", () => {
-  let server: ReturnType<typeof Bun.serve>;
+  let server: TestServer;
 
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      fetch: () =>
-        new Response(
-          JSON.stringify({
-            error: { code: "rate_limited", message: "slow down" },
-          }),
-          { status: 429, headers: { "Content-Type": "application/json" } },
-        ),
-    });
+  beforeAll(async () => {
+    server = await startTestServer(() => ({
+      status: 429,
+      body: { error: { code: "rate_limited", message: "slow down" } },
+    }));
   });
 
-  afterAll(() => server.stop());
+  afterAll(async () => {
+    await server.stop();
+  });
 
   it("returns PUBLISH exit code", async () => {
-    const { code } = await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      successAdapter,
-    );
+    const { code } = await runWith(["--no-open"], server.url, successAdapter);
     expect(code).toBe(EXIT.PUBLISH);
   });
 
   it("prints the rate_limited message", async () => {
-    const { errors } = await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      successAdapter,
-    );
+    const { errors } = await runWith(["--no-open"], server.url, successAdapter);
     expect(errors.join("\n")).toContain("Rate limited");
   });
 
   it("tells the user retry is safe", async () => {
-    const { errors } = await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      successAdapter,
-    );
+    const { errors } = await runWith(["--no-open"], server.url, successAdapter);
     expect(errors.join("\n").toLowerCase()).toContain("retry");
   });
 });
 
 describe("publish failure — 5xx server error", () => {
-  let server: ReturnType<typeof Bun.serve>;
+  let server: TestServer;
 
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      fetch: () => new Response("Internal Server Error", { status: 503 }),
-    });
+  beforeAll(async () => {
+    server = await startTestServer(() => ({
+      status: 503,
+      body: "Internal Server Error",
+    }));
   });
 
-  afterAll(() => server.stop());
+  afterAll(async () => {
+    await server.stop();
+  });
 
   it("returns PUBLISH exit code", async () => {
-    const { code } = await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      successAdapter,
-    );
+    const { code } = await runWith(["--no-open"], server.url, successAdapter);
     expect(code).toBe(EXIT.PUBLISH);
   });
 
   it("message says retry is safe", async () => {
-    const { errors } = await runWith(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-      successAdapter,
-    );
+    const { errors } = await runWith(["--no-open"], server.url, successAdapter);
     expect(errors.join("\n").toLowerCase()).toContain("retry");
   });
 });

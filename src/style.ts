@@ -1,4 +1,4 @@
-import type { Style } from "@usage-fyi/core";
+import type { Style } from "./core/index.js";
 
 /** Fixed card style — single design, no user-configurable overrides. */
 export const CARD_STYLE: Style = {

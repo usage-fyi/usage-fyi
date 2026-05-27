@@ -1,8 +1,6 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
-// Invocation: bunx @usage-fyi/cli
-// npx compatibility requires a compiled dist step (not needed in Phase 1; bunx is the supported path).
-
+import { fileURLToPath } from "node:url";
 import {
   HelpRequestedError,
   LaterPhaseError,
@@ -135,6 +133,6 @@ export async function run(argv: string[]): Promise<number> {
   return EXIT.OK;
 }
 
-if (import.meta.main) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   process.exit(await run(process.argv.slice(2)));
 }

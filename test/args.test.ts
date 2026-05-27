@@ -1,9 +1,5 @@
-import { describe, expect, it } from "bun:test";
-import {
-  HelpRequestedError,
-  LaterPhaseError,
-  parseArgs,
-} from "../src/args";
+import { describe, expect, it } from "vitest";
+import { HelpRequestedError, LaterPhaseError, parseArgs } from "../src/args";
 import { DEFAULT_SOURCE } from "../src/adapters/registry";
 
 describe("parseArgs — defaults", () => {

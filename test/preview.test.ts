@@ -1,12 +1,16 @@
-import { describe, expect, it } from "bun:test";
-import type { Snapshot } from "@usage-fyi/core";
+import { describe, expect, it } from "vitest";
+import type { Snapshot } from "../src/core/index.js";
 import { buildHtml } from "../src/preview.js";
 
 const SNAPSHOT: Snapshot = {
   schema: "snapshot/1",
   generatedAt: "2026-05-19T04:00:00Z",
   origin: "tool-collected",
-  source: { tool: "ccusage", adapter: "1", range: ["2026-04-19", "2026-05-18"] },
+  source: {
+    tool: "ccusage",
+    adapter: "1",
+    range: ["2026-04-19", "2026-05-18"],
+  },
   daily: [
     {
       d: "2026-05-18",
