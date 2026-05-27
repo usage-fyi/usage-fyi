@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -32,7 +32,7 @@ describe("configPath", () => {
     const p = configPath();
     expect(p).toContain(tmpDir);
     expect(p).toContain("usage-fyi");
-    expect(p).toEndWith("config.json");
+    expect(p.endsWith("config.json")).toBe(true);
   });
 
   it("falls back to ~/.config when XDG_CONFIG_HOME is unset", () => {
@@ -40,7 +40,7 @@ describe("configPath", () => {
     const p = configPath();
     expect(p).toContain(".config");
     expect(p).toContain("usage-fyi");
-    expect(p).toEndWith("config.json");
+    expect(p.endsWith("config.json")).toBe(true);
   });
 });
 
@@ -103,7 +103,10 @@ describe("saveConfig", () => {
   });
 
   it("round-trips config through saveConfig then loadConfig", async () => {
-    const original = { source: "ccusage", apiBase: "https://staging.usage.fyi" };
+    const original = {
+      source: "ccusage",
+      apiBase: "https://staging.usage.fyi",
+    };
     await saveConfig(original);
     const loaded = await loadConfig();
     expect(loaded.source).toBe("ccusage");
@@ -175,7 +178,9 @@ describe("resolveSettings — built-in defaults", () => {
 
 describe("resolveSettings — config overrides defaults", () => {
   it("config.apiBase overrides default", () => {
-    const s = resolveSettings(baseFlags, { apiBase: "https://staging.example.com" });
+    const s = resolveSettings(baseFlags, {
+      apiBase: "https://staging.example.com",
+    });
     expect(s.apiBase).toBe("https://staging.example.com");
   });
 });
@@ -186,9 +191,11 @@ describe("secret-safe diagnostic discipline", () => {
   it("a token-shaped config value never appears verbatim in console output", () => {
     const secretValue = "tok_abc123_SENSITIVE";
     const captured: string[] = [];
-    const spy = spyOn(console, "log").mockImplementation(
-      (...args: unknown[]) => captured.push(args.map(String).join(" ")),
-    );
+    const spy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) =>
+        captured.push(args.map(String).join(" ")),
+      );
     try {
       // Simulate logging a redacted config for diagnostics
       const configWithSecret = { apiToken: secretValue, source: "ccusage" };

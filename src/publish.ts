@@ -1,4 +1,4 @@
-import type { Snapshot, Style } from "@usage-fyi/core";
+import type { Snapshot, Style } from "./core/index.js";
 
 export interface PublishResult {
   id: string;

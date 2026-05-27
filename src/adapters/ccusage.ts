@@ -1,4 +1,9 @@
-import { slim, type RawCcusage } from "@usage-fyi/core";
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { text } from "node:stream/consumers";
+import { fileURLToPath } from "node:url";
+import { slim, type RawCcusage } from "../core/index.js";
 import type { UsageAdapter, CollectOpts } from "./types.js";
 
 export class CollectError extends Error {
@@ -15,8 +20,24 @@ export class CollectError extends Error {
 const AVAILABLE_TIMEOUT_MS = 5_000;
 const COLLECT_TIMEOUT_MS = 30_000;
 
-// ccusage is declared as a runtime dependency in package.json (pinned there).
-// `bunx ccusage` resolves the local install — no network fetch on first run.
+/**
+ * Resolve the absolute path to ccusage's JS bin file via Node module resolution.
+ * Works under both Node and Bun (both honor `import.meta.resolve` and the
+ * ccusage package's `bin` mapping) — no PATH or bunx dependency.
+ */
+function resolveCcusageBin(): string {
+  const pkgUrl = import.meta.resolve("ccusage/package.json");
+  const pkgPath = fileURLToPath(pkgUrl);
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+    bin?: string | Record<string, string>;
+  };
+  const binRel =
+    typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.ccusage;
+  if (!binRel) {
+    throw new Error("ccusage package has no `ccusage` bin entry");
+  }
+  return join(dirname(pkgPath), binRel);
+}
 
 /** Parse/validate subprocess output; exported for unit testing without spawning. */
 export function parseCollectOutput(
@@ -47,18 +68,43 @@ export function parseCollectOutput(
   return parsed as RawCcusage;
 }
 
+interface RunResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Spawn ccusage under the current runtime (`process.execPath` is `node` on
+ * Node and `bun` on Bun). Times out via `proc.kill()` after `timeoutMs`.
+ */
+async function runCcusage(args: string[], timeoutMs: number): Promise<RunResult> {
+  const proc = spawn(process.execPath, [resolveCcusageBin(), ...args], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const killTimer = setTimeout(() => proc.kill(), timeoutMs);
+
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      new Promise<number>((resolve, reject) => {
+        proc.once("exit", (code) => resolve(code ?? 0));
+        proc.once("error", reject);
+      }),
+      text(proc.stdout),
+      text(proc.stderr),
+    ]);
+    return { exitCode, stdout, stderr };
+  } finally {
+    clearTimeout(killTimer);
+  }
+}
+
 export const ccusageAdapter: UsageAdapter<RawCcusage> = {
   id: "ccusage",
 
   async available(): Promise<boolean> {
     try {
-      const proc = Bun.spawn(["bunx", "ccusage", "--version"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const timer = setTimeout(() => proc.kill(), AVAILABLE_TIMEOUT_MS);
-      const exitCode = await proc.exited;
-      clearTimeout(timer);
+      const { exitCode } = await runCcusage(["--version"], AVAILABLE_TIMEOUT_MS);
       return exitCode === 0;
     } catch {
       return false;
@@ -66,23 +112,14 @@ export const ccusageAdapter: UsageAdapter<RawCcusage> = {
   },
 
   async collect(opts: CollectOpts): Promise<RawCcusage> {
-    const args = ["bunx", "ccusage", "daily", "--json"];
+    const args = ["daily", "--json"];
     if (opts.from) args.push("--since", opts.from);
     if (opts.to) args.push("--until", opts.to);
 
-    const proc = Bun.spawn(args, {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    const killTimer = setTimeout(() => proc.kill(), COLLECT_TIMEOUT_MS);
-
-    const [exitCode, stdout, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]).finally(() => clearTimeout(killTimer));
-
+    const { exitCode, stdout, stderr } = await runCcusage(
+      args,
+      COLLECT_TIMEOUT_MS,
+    );
     return parseCollectOutput(stdout, stderr, exitCode);
   },
 

@@ -1,4 +1,4 @@
-import type { Snapshot } from "@usage-fyi/core";
+import type { Snapshot } from "../core/index.js";
 
 /** Adapter-private raw output; each adapter narrows this to its own concrete type. */
 export type RawUsage = unknown;

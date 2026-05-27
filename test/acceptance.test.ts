@@ -3,16 +3,18 @@
  * Covers: full flow, profile/token rejection, determinism, no-telemetry guard,
  * and a source-tree assertion that no forbidden modules exist.
  */
-import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { slim, contentHash } from "@usage-fyi/core";
-import type { RawCcusage, Snapshot } from "@usage-fyi/core";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { slim, contentHash } from "../src/core/index.js";
+import type { RawCcusage, Snapshot } from "../src/core/index.js";
 import { run } from "../src/index.js";
 import { registerAdapter } from "../src/adapters/registry.js";
 import type { UsageAdapter } from "../src/adapters/types.js";
 import { EXIT } from "../src/errors.js";
+import { startTestServer, type TestServer } from "./_helpers/test-server.js";
 import fixture from "./fixtures/ccusage-daily.json" with { type: "json" };
 import path from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const raw = fixture as unknown as RawCcusage;
 const FIXED_TS = "2026-01-01T00:00:00.000Z";
@@ -37,12 +39,16 @@ async function runFull(
   registerAdapter(adapter);
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const logSpy = spyOn(console, "log").mockImplementation(
-    (...args: unknown[]) => stdout.push(args.map(String).join(" ")),
-  );
-  const errSpy = spyOn(console, "error").mockImplementation(
-    (...args: unknown[]) => stderr.push(args.map(String).join(" ")),
-  );
+  const logSpy = vi
+    .spyOn(console, "log")
+    .mockImplementation((...args: unknown[]) =>
+      stdout.push(args.map(String).join(" ")),
+    );
+  const errSpy = vi
+    .spyOn(console, "error")
+    .mockImplementation((...args: unknown[]) =>
+      stderr.push(args.map(String).join(" ")),
+    );
   process.env.USAGE_FYI_API_BASE = apiBase;
   let code: number;
   try {
@@ -59,64 +65,49 @@ async function runFull(
 
 describe("full publish flow — success path", () => {
   let capturedBody: unknown;
-  let server: ReturnType<typeof Bun.serve>;
+  let server: TestServer;
 
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      async fetch(req) {
-        if (
-          req.method === "POST" &&
-          new URL(req.url).pathname === "/api/snapshots"
-        ) {
-          capturedBody = await req.json();
-          return new Response(
-            JSON.stringify({ id: "accept-id", manageKey: "accept-key" }),
-            { status: 201, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response("Not Found", { status: 404 });
-      },
+  beforeAll(async () => {
+    server = await startTestServer(async (req) => {
+      if (req.method === "POST" && req.pathname === "/api/snapshots") {
+        capturedBody = await req.json();
+        return {
+          status: 201,
+          body: { id: "accept-id", manageKey: "accept-key" },
+        };
+      }
+      return { status: 404, body: "Not Found" };
     });
   });
 
-  afterAll(() => server.stop());
+  afterAll(async () => {
+    await server.stop();
+  });
 
   it("returns exit code OK", async () => {
-    const { code } = await runFull(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-    );
+    const { code } = await runFull(["--no-open"], server.url);
     expect(code).toBe(EXIT.OK);
   });
 
   it("prints the configured /s/<id> URL", async () => {
-    const { stdout } = await runFull(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-    );
-    expect(stdout.join("\n")).toContain(
-      `http://localhost:${server.port}/s/accept-id`,
-    );
+    const { stdout } = await runFull(["--no-open"], server.url);
+    expect(stdout.join("\n")).toContain(`${server.url}/s/accept-id`);
   });
 
   it("prints the manageKey", async () => {
-    const { stdout } = await runFull(
-      ["--no-open"],
-      `http://localhost:${server.port}`,
-    );
+    const { stdout } = await runFull(["--no-open"], server.url);
     expect(stdout.join("\n")).toContain("accept-key");
   });
 
   it("printed snapshot origin is tool-collected", async () => {
-    await runFull(["--no-open"], `http://localhost:${server.port}`);
+    await runFull(["--no-open"], server.url);
     expect((capturedBody as { snapshot: Snapshot }).snapshot.origin).toBe(
       "tool-collected",
     );
   });
 
   it("POST body has exactly { snapshot, style } keys", async () => {
-    await runFull(["--no-open"], `http://localhost:${server.port}`);
+    await runFull(["--no-open"], server.url);
     const keys = Object.keys(capturedBody as Record<string, unknown>).sort();
     expect(keys).toEqual(["snapshot", "style"]);
   });
@@ -125,50 +116,36 @@ describe("full publish flow — success path", () => {
 // ─── --profile / --token rejection ───────────────────────────────────────────
 
 describe("--profile and --token are rejected (later-phase)", () => {
-  let server: ReturnType<typeof Bun.serve>;
+  let server: TestServer;
 
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      fetch: () =>
-        new Response(JSON.stringify({ id: "x", manageKey: "y" }), {
-          status: 201,
-          headers: { "Content-Type": "application/json" },
-        }),
-    });
+  beforeAll(async () => {
+    server = await startTestServer(() => ({
+      status: 201,
+      body: { id: "x", manageKey: "y" },
+    }));
   });
 
-  afterAll(() => server.stop());
+  afterAll(async () => {
+    await server.stop();
+  });
 
   it("--profile exits with ARGS code", async () => {
-    const { code } = await runFull(
-      ["--profile", "alice"],
-      `http://localhost:${server.port}`,
-    );
+    const { code } = await runFull(["--profile", "alice"], server.url);
     expect(code).toBe(EXIT.ARGS);
   });
 
   it("--profile message mentions later phase", async () => {
-    const { stderr } = await runFull(
-      ["--profile", "alice"],
-      `http://localhost:${server.port}`,
-    );
+    const { stderr } = await runFull(["--profile", "alice"], server.url);
     expect(stderr.join("\n").toLowerCase()).toContain("later phase");
   });
 
   it("--token exits with ARGS code", async () => {
-    const { code } = await runFull(
-      ["--token", "tok123"],
-      `http://localhost:${server.port}`,
-    );
+    const { code } = await runFull(["--token", "tok123"], server.url);
     expect(code).toBe(EXIT.ARGS);
   });
 
   it("--token message mentions later phase", async () => {
-    const { stderr } = await runFull(
-      ["--token", "tok123"],
-      `http://localhost:${server.port}`,
-    );
+    const { stderr } = await runFull(["--token", "tok123"], server.url);
     expect(stderr.join("\n").toLowerCase()).toContain("later phase");
   });
 });
@@ -211,21 +188,12 @@ describe("snapshot determinism", () => {
 
   it("running through a mock adapter twice produces the same POST body", async () => {
     const bodies: Snapshot[] = [];
-    const server = Bun.serve({
-      port: 0,
-      async fetch(req) {
-        if (req.method === "POST") {
-          const b = (await req.json()) as { snapshot: Snapshot };
-          bodies.push(b.snapshot);
-        }
-        return new Response(
-          JSON.stringify({ id: "d-id", manageKey: "d-key" }),
-          {
-            status: 201,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      },
+    const server = await startTestServer(async (req) => {
+      if (req.method === "POST") {
+        const b = (await req.json()) as { snapshot: Snapshot };
+        bodies.push(b.snapshot);
+      }
+      return { status: 201, body: { id: "d-id", manageKey: "d-key" } };
     });
     // Use fixed-timestamp adapter so both runs are identical
     const fixedAdapter: UsageAdapter = {
@@ -236,16 +204,8 @@ describe("snapshot determinism", () => {
         slim(raw, { origin: "tool-collected", generatedAt: FIXED_TS }),
     };
     try {
-      await runFull(
-        ["--no-open"],
-        `http://localhost:${server.port}`,
-        fixedAdapter,
-      );
-      await runFull(
-        ["--no-open"],
-        `http://localhost:${server.port}`,
-        fixedAdapter,
-      );
+      await runFull(["--no-open"], server.url, fixedAdapter);
+      await runFull(["--no-open"], server.url, fixedAdapter);
       expect(bodies).toHaveLength(2);
       const [h1, h2] = await Promise.all([
         contentHash(bodies[0]!),
@@ -253,7 +213,7 @@ describe("snapshot determinism", () => {
       ]);
       expect(h1).toBe(h2);
     } finally {
-      server.stop();
+      await server.stop();
     }
   });
 });
@@ -262,42 +222,34 @@ describe("snapshot determinism", () => {
 
 describe("no-telemetry guard — exactly one outbound HTTP call", () => {
   let requests: Array<{ method: string; path: string }> = [];
-  let server: ReturnType<typeof Bun.serve>;
+  let server: TestServer;
 
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      async fetch(req) {
-        requests.push({
-          method: req.method,
-          path: new URL(req.url).pathname,
-        });
-        if (
-          req.method === "POST" &&
-          new URL(req.url).pathname === "/api/snapshots"
-        ) {
-          await req.body?.cancel();
-          return new Response(
-            JSON.stringify({ id: "tele-id", manageKey: "tele-key" }),
-            { status: 201, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response("Not Found", { status: 404 });
-      },
+  beforeAll(async () => {
+    server = await startTestServer((req) => {
+      requests.push({ method: req.method, path: req.pathname });
+      if (req.method === "POST" && req.pathname === "/api/snapshots") {
+        return {
+          status: 201,
+          body: { id: "tele-id", manageKey: "tele-key" },
+        };
+      }
+      return { status: 404, body: "Not Found" };
     });
   });
 
-  afterAll(() => server.stop());
+  afterAll(async () => {
+    await server.stop();
+  });
 
   it("full flow makes exactly one HTTP request", async () => {
     requests = [];
-    await runFull(["--no-open"], `http://localhost:${server.port}`);
+    await runFull(["--no-open"], server.url);
     expect(requests).toHaveLength(1);
   });
 
   it("that single request is POST /api/snapshots", async () => {
     requests = [];
-    await runFull(["--no-open"], `http://localhost:${server.port}`);
+    await runFull(["--no-open"], server.url);
     expect(requests[0]!.method).toBe("POST");
     expect(requests[0]!.path).toBe("/api/snapshots");
   });
@@ -307,7 +259,7 @@ describe("no-telemetry guard — exactly one outbound HTTP call", () => {
 
 describe("source-tree — no forbidden modules in cli/src", () => {
   const srcDir = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     "../src",
   );
 

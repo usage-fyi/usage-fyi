@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, it, spyOn } from "bun:test";
-import { slim } from "@usage-fyi/core";
-import type { RawCcusage } from "@usage-fyi/core";
-import { run } from "../src/index";
-import { registerAdapter } from "../src/adapters/registry";
-import type { UsageAdapter } from "../src/adapters/types";
+import { afterAll, beforeAll, describe, it, vi } from "vitest";
+import { slim } from "../src/core/index.js";
+import type { RawCcusage } from "../src/core/index.js";
+import { run } from "../src/index.js";
+import { registerAdapter } from "../src/adapters/registry.js";
+import type { UsageAdapter } from "../src/adapters/types.js";
+import { startTestServer, type TestServer } from "./_helpers/test-server.js";
 import fixture from "./fixtures/ccusage-daily.json" with { type: "json" };
 
 const raw = fixture as unknown as RawCcusage;
@@ -19,29 +20,25 @@ const stubAdapter: UsageAdapter = {
   toSnapshot: () => testSnapshot,
 };
 
-let server: ReturnType<typeof Bun.serve>;
+let server: TestServer;
 
-beforeAll(() => {
+beforeAll(async () => {
   registerAdapter(stubAdapter);
-  server = Bun.serve({
-    port: 0,
-    fetch: () =>
-      new Response(JSON.stringify({ id: "ep-id", manageKey: "ep-key" }), {
-        status: 201,
-        headers: { "Content-Type": "application/json" },
-      }),
-  });
-  process.env.USAGE_FYI_API_BASE = `http://localhost:${server.port}`;
+  server = await startTestServer(() => ({
+    status: 201,
+    body: { id: "ep-id", manageKey: "ep-key" },
+  }));
+  process.env.USAGE_FYI_API_BASE = server.url;
 });
 
-afterAll(() => {
-  server.stop();
+afterAll(async () => {
+  await server.stop();
   delete process.env.USAGE_FYI_API_BASE;
 });
 
 describe("@usage-fyi/cli entrypoint", () => {
   it("run() with no args resolves without error", async () => {
-    const spy = spyOn(console, "log").mockImplementation(() => {});
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await run(["--no-open"]);
     } finally {
@@ -50,7 +47,7 @@ describe("@usage-fyi/cli entrypoint", () => {
   });
 
   it("run() with --json resolves without error", async () => {
-    const spy = spyOn(console, "log").mockImplementation(() => {});
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await run(["--json"]);
     } finally {
@@ -59,7 +56,7 @@ describe("@usage-fyi/cli entrypoint", () => {
   });
 
   it("run() with --no-open resolves without error", async () => {
-    const spy = spyOn(console, "log").mockImplementation(() => {});
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await run(["--no-open"]);
     } finally {
