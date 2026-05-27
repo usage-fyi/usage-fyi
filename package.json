@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
-    "oxlint": "^0.16.0",
+    "oxlint": "^1.67.0",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3",
     "vitest": "^2.1.8"
