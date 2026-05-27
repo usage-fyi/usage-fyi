@@ -42,7 +42,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "ccusage": "20.0.4"
+    "ccusage": "20.0.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
