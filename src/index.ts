@@ -61,11 +61,11 @@ export async function run(argv: string[]): Promise<number> {
 
   const isAvailable = await adapter.available();
   if (!isAvailable) {
-    console.error(`Error: ${parsed.source} is not installed or not runnable.`);
+    console.error(`Error: ${parsed.source} failed to launch.`);
     console.error(
-      `  Install ccusage: bunx ccusage@latest --version  (or: npm install -g ccusage)`,
+      `  ccusage ships as a dependency of @usage-fyi/cli — this usually means a broken install.`,
     );
-    console.error(`  Then retry: bunx @usage-fyi/cli`);
+    console.error(`  Try reinstalling: bunx @usage-fyi/cli@latest`);
     return EXIT.ADAPTER;
   }
 

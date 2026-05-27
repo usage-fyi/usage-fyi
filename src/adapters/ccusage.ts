@@ -15,9 +15,8 @@ export class CollectError extends Error {
 const AVAILABLE_TIMEOUT_MS = 5_000;
 const COLLECT_TIMEOUT_MS = 30_000;
 
-// Pinned so an upstream CLI-syntax change can't break us silently again.
-// Last verified against this version. Bump deliberately, with a test run.
-const CCUSAGE_VERSION = "20.0.4";
+// ccusage is declared as a runtime dependency in package.json (pinned there).
+// `bunx ccusage` resolves the local install — no network fetch on first run.
 
 /** Parse/validate subprocess output; exported for unit testing without spawning. */
 export function parseCollectOutput(
@@ -53,13 +52,10 @@ export const ccusageAdapter: UsageAdapter<RawCcusage> = {
 
   async available(): Promise<boolean> {
     try {
-      const proc = Bun.spawn(
-        ["bunx", `ccusage@${CCUSAGE_VERSION}`, "--version"],
-        {
-          stdout: "pipe",
-          stderr: "pipe",
-        },
-      );
+      const proc = Bun.spawn(["bunx", "ccusage", "--version"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const timer = setTimeout(() => proc.kill(), AVAILABLE_TIMEOUT_MS);
       const exitCode = await proc.exited;
       clearTimeout(timer);
@@ -70,7 +66,7 @@ export const ccusageAdapter: UsageAdapter<RawCcusage> = {
   },
 
   async collect(opts: CollectOpts): Promise<RawCcusage> {
-    const args = ["bunx", `ccusage@${CCUSAGE_VERSION}`, "daily", "--json"];
+    const args = ["bunx", "ccusage", "daily", "--json"];
     if (opts.from) args.push("--since", opts.from);
     if (opts.to) args.push("--until", opts.to);
 

@@ -6,20 +6,13 @@ Publish your AI coding-agent usage as a shareable snapshot on [usage.fyi](https:
 
 ## Installation
 
-```sh
-bun install
-```
-
-Requirements:
-
-- [Bun](https://bun.sh), including `bunx`
-- [ccusage](https://www.npmjs.com/package/ccusage) available through `bunx` or on `PATH`
-
-Check `ccusage`:
+Just run it — `bunx` handles fetching the CLI and its dependencies:
 
 ```sh
-bunx ccusage@latest --version
+bunx @usage-fyi/cli
 ```
+
+`ccusage` is bundled as a dependency, so there is **no separate install step**. The only requirement is [Bun](https://bun.sh) (which provides `bunx`).
 
 ## Usage
 

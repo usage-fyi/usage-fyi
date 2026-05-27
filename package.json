@@ -30,6 +30,9 @@
     "lint": "oxlint src/ test/",
     "verify": "bun run typecheck && bun run lint && bun test"
   },
+  "dependencies": {
+    "ccusage": "20.0.4"
+  },
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "oxlint": "^0.16.0",
