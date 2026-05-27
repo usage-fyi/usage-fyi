@@ -34,7 +34,7 @@ export class VersionRequestedError extends Error {
   }
 }
 
-const CLI_VERSION = "0.0.1";
+const CLI_VERSION = "0.1.0";
 
 export const HELP_TEXT = `\
 usage-fyi — publish your AI coding-agent usage as a shareable card
