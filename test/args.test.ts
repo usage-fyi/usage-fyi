@@ -120,6 +120,6 @@ describe("parseArgs — --help", () => {
     } catch (e) {
       err = e;
     }
-    expect((err as HelpRequestedError).text).toContain("bunx @usage-fyi/cli");
+    expect((err as HelpRequestedError).text).toContain("bunx usage-fyi");
   });
 });

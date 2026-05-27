@@ -1,70 +1,145 @@
-# usage-fyi CLI
+# usage-fyi
 
-Publish your AI coding-agent usage as a shareable snapshot on [usage.fyi](https://usage.fyi) or any compatible self-hosted server.
+> Turn your AI coding-agent usage into beautiful visualisations — preview locally, share only if you want to.
 
-`usage-fyi` works with the popular agent harnesses — **Claude Code, Codex, Gemini CLI**, and others supported by [`ccusage`](https://www.npmjs.com/package/ccusage). The CLI reads your local usage through `ccusage`, publishes a snapshot, and prints an unlisted share link plus a manage key.
+[![CI](https://github.com/usage-fyi/usage-fyi/actions/workflows/ci.yml/badge.svg)](https://github.com/usage-fyi/usage-fyi/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/usage-fyi.svg)](https://www.npmjs.com/package/usage-fyi)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js >=20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
 
-## Installation
+**`usage-fyi`** reads your local AI agent usage data and turns it into rich, shareable visual cards. Built on top of [`ccusage`](https://www.npmjs.com/package/ccusage), it works out of the box with the most popular agent harnesses:
 
-Just run it — your package manager fetches the CLI and `ccusage` together, no separate install step:
+- **Claude Code**
+- **Codex (OpenAI)**
+- **Gemini CLI**
+- …and any other harness supported by `ccusage`
+
+Everything stays local by default. Sharing is entirely opt-in.
+
+---
+
+## ✨ Features
+
+- **Local-first visualisation** — see your usage as beautiful charts without sending anything anywhere
+- **Beautiful cards** — multiple designs, themes, and layouts (wide, portrait, dark, light, and more)
+- **Optional sharing** — publish a snapshot only when you choose to; unlisted by default
+- **JSON output** — pipe-friendly machine-readable output for custom workflows
+- **Zero-config setup** — detects your usage automatically via `ccusage`
+- **Deterministic hashing** — canonical JSON ensures identical usage produces identical hashes
+
+---
+
+## 📦 Installation
+
+No global install needed. Your package manager fetches both the CLI and `ccusage` in one shot:
 
 ```sh
-npx @usage-fyi/cli       # Node ≥ 20
-# or
-bunx @usage-fyi/cli      # Bun
+# Node ≥ 20
+npx usage-fyi
+
+# Bun
+bunx usage-fyi
 ```
 
 The CLI is Node-native and runs identically under both runtimes.
 
-## Usage
+---
+
+## 🚀 Quick Start
 
 ```sh
-# Publish and open in browser (default)
-npx @usage-fyi/cli
+# Preview your usage locally (default — nothing leaves your machine)
+npx usage-fyi --preview
 
-# Preview locally before publishing
-npx @usage-fyi/cli --preview
+# Generate a shareable card and open it in your browser
+npx usage-fyi
 
-# Publish without opening a browser, emit JSON for piping
-npx @usage-fyi/cli --no-open --json
+# Emit JSON for piping into other tools — no network call, no browser
+npx usage-fyi --no-open --json
 ```
 
-## Self-Hosting
+---
 
-Set `USAGE_FYI_API_BASE` to publish to a compatible server:
-
-```sh
-USAGE_FYI_API_BASE=https://usage.example.com npx @usage-fyi/cli
-```
-
-## Flags
+## 📋 CLI Reference
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--source <id>` | `ccusage` | Usage-source adapter |
-| `--preview` | off | Render the card locally on a localhost port instead of publishing; share is one click |
+| `--preview` | off | Render the card locally on a localhost port instead of publishing |
 | `--json` | off | Machine-readable output (`{id, url, manageKey, viewerUrl}`) |
 | `--no-open` | open | Do not open the published link in a browser |
-| `--version` | - | Print version and exit |
-| `--help` | - | Print help |
+| `--version` | — | Print version and exit |
+| `--help` | — | Print help |
 
-The hosted server is at [usage.fyi](https://usage.fyi). This CLI is open-source under the MIT license.
+---
 
-## Development
+## 🧩 Architecture
+
+The CLI vendors a small, zero-dependency `core` module under [`src/core/`](src/core). It encodes the snapshot and style schema, canonical-JSON hashing, and slimming of `ccusage` output. It is intentionally kept in-tree to keep this repo free of workspace dependencies.
+
+```
+src/
+├── index.ts          # CLI entry point and orchestration
+├── args.ts           # Argument parsing
+├── config.ts         # XDG-aware config loading
+├── publish.ts        # HTTP publishing logic
+├── preview.ts        # Local dev-server for --preview
+├── open.ts           # Cross-platform browser opener
+├── style.ts          # Style resolution
+├── errors.ts         # Exit codes and error formatting
+├── core/             # Zero-dep snapshot schema, hashing, validation
+└── adapters/         # Usage-source adapters (ccusage, extensible)
+```
+
+---
+
+## 🧪 Development
 
 ```sh
-npm install            # install dev dependencies
-npm test               # run the test suite (vitest)
-npm run typecheck      # tsc --noEmit
-npm run lint           # oxlint
-npm run verify         # typecheck + lint + test
-npm run build          # tsc -> dist/
-npm start              # run src/index.ts via tsx
+# Install dependencies
+npm install
+
+# Run the test suite (Vitest)
+npm test
+
+# Type check
+npm run typecheck
+
+# Lint (oxlint)
+npm run lint
+
+# Full verification pipeline
+npm run verify        # typecheck + lint + test
+
+# Build for release
+npm run build         # tsc -> dist/
+
+# Run locally
+npm start             # tsx src/index.ts
 ```
 
 Bun is also fully supported — `bun src/index.ts` and `bunx vitest run` work without modification, since the source is Node-native.
 
-The CLI vendors a small zero-dependency `core` module under [`src/core/`](src/core).
-It encodes the snapshot/style schema, canonical-JSON hashing, and slimming
-of `ccusage` output. It is intentionally kept in-tree to keep this repo
-free of workspace dependencies.
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to open an issue or submit a pull request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feat/amazing-feature`)
+3. Make your changes
+4. Ensure the verify pipeline passes (`npm run verify`)
+5. Commit your changes (`git commit -m 'feat: add amazing feature'`)
+6. Push to the branch (`git push origin feat/amazing-feature`)
+7. Open a Pull Request
+
+Please make sure your code follows the existing style and that all tests pass.
+
+---
+
+## 📄 License
+
+MIT © [usage-fyi contributors](https://github.com/usage-fyi)
+
+The hosted server is at [usage.fyi](https://usage.fyi). This CLI is open-source under the MIT license.
