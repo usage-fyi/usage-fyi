@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import {
   HelpRequestedError,
   LaterPhaseError,
@@ -133,6 +134,10 @@ export async function run(argv: string[]): Promise<number> {
   return EXIT.OK;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+const invokedAs = process.argv[1];
+if (
+  invokedAs &&
+  pathToFileURL(realpathSync(invokedAs)).href === import.meta.url
+) {
   process.exit(await run(process.argv.slice(2)));
 }

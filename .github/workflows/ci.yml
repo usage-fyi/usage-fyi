@@ -37,3 +37,14 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Smoke-test bin shim via symlink
+        run: |
+          ln -s "$PWD/dist/index.js" /tmp/usage-fyi-symlink-test
+          out=$(/tmp/usage-fyi-symlink-test --version)
+          expected="$(node -p "require('./package.json').version")"
+          if [ "$out" != "$expected" ]; then
+            echo "Expected '$expected', got '$out' — bin entrypoint did not invoke run()."
+            exit 1
+          fi
+          echo "bin shim OK: $out"
