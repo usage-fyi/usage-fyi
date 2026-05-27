@@ -1,7 +1,7 @@
 {
   "name": "@usage-fyi/cli",
   "version": "0.0.1",
-  "description": "Publish Claude Code usage snapshots to usage.fyi.",
+  "description": "Publish AI coding-agent usage snapshots to usage.fyi. Works with Claude Code, Codex, Gemini CLI, and other popular agent harnesses via ccusage.",
   "license": "MIT",
   "type": "module",
   "bin": {

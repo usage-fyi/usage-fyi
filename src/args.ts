@@ -37,7 +37,8 @@ export class VersionRequestedError extends Error {
 const CLI_VERSION = "0.0.1";
 
 export const HELP_TEXT = `\
-usage-fyi — publish your Claude usage as a shareable card
+usage-fyi — publish your AI coding-agent usage as a shareable card
+              (works with Claude Code, Codex, Gemini CLI, and more via ccusage)
 
   bunx @usage-fyi/cli
 

@@ -1,8 +1,8 @@
 # usage-fyi CLI
 
-Publish Claude Code usage snapshots to [usage.fyi](https://usage.fyi) or any compatible self-hosted server.
+Publish your AI coding-agent usage as a shareable snapshot on [usage.fyi](https://usage.fyi) or any compatible self-hosted server.
 
-The CLI collects local Claude usage through `ccusage`, publishes a snapshot, and prints an unlisted share link plus a manage key.
+`usage-fyi` works with the popular agent harnesses — **Claude Code, Codex, Gemini CLI**, and others supported by [`ccusage`](https://www.npmjs.com/package/ccusage). The CLI reads your local usage through `ccusage`, publishes a snapshot, and prints an unlisted share link plus a manage key.
 
 ## Installation
 
