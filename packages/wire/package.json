@@ -1,6 +1,6 @@
 {
   "name": "@usage-fyi/wire",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared wire contract for usage.fyi — canonicalization, content hash, and the byte-identical wire-shape types that producers (the usage-fyi CLI) and consumers (the usage.fyi server) must both understand. Zero runtime dependencies.",
   "license": "MIT",
   "type": "module",
