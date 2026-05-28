@@ -21,14 +21,19 @@ describe("ccusageAdapter.toSnapshot", () => {
     expect(snap.origin).toBe("tool-collected");
   });
 
-  it("produces schema snapshot/1", () => {
+  it("produces schema snapshot/2", () => {
     const snap = ccusageAdapter.toSnapshot(raw);
-    expect(snap.schema).toBe("snapshot/1");
+    expect(snap.schema).toBe("snapshot/2");
   });
 
   it("sets source.tool to ccusage", () => {
     const snap = ccusageAdapter.toSnapshot(raw);
     expect(snap.source.tool).toBe("ccusage");
+  });
+
+  it("sets source.adapter to '2'", () => {
+    const snap = ccusageAdapter.toSnapshot(raw);
+    expect(snap.source.adapter).toBe("2");
   });
 
   it("daily entry count matches fixture", () => {
