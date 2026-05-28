@@ -1,13 +1,13 @@
-name: Release
+name: Release CLI
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'cli-v*'
 
 jobs:
   publish:
-    name: Publish to npm
+    name: Publish usage-fyi to npm
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -29,26 +29,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify tag matches package.json
+      - name: Verify tag matches packages/cli/package.json
         run: |
-          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          PKG_VERSION="cli-v$(node -p "require('./packages/cli/package.json').version")"
           TAG="${GITHUB_REF_NAME}"
           if [ "$PKG_VERSION" != "$TAG" ]; then
-            echo "Tag $TAG does not match package.json version $PKG_VERSION"
+            echo "Tag $TAG does not match packages/cli/package.json version $PKG_VERSION"
             exit 1
           fi
 
       - name: Type check
-        run: npm run typecheck
+        run: npm run typecheck --workspace=usage-fyi
 
       - name: Lint
-        run: npm run lint
+        run: npm run lint --workspace=usage-fyi
 
       - name: Test
-        run: npm test
+        run: npm run test --workspace=usage-fyi
 
       - name: Build
-        run: npm run build
+        run: npm run build --workspace=usage-fyi
 
       - name: Publish
-        run: npm publish --access public
+        run: npm publish --access public --workspace=usage-fyi
