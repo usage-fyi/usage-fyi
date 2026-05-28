@@ -1,0 +1,54 @@
+{
+  "name": "usage-fyi",
+  "version": "0.1.1",
+  "description": "Publish AI coding-agent usage snapshots to usage.fyi. Works with Claude Code, Codex, Gemini CLI, and other popular agent harnesses via ccusage.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "usage-fyi": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usage-fyi/usage-fyi.git"
+  },
+  "homepage": "https://usage.fyi",
+  "bugs": {
+    "url": "https://github.com/usage-fyi/usage-fyi/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "start": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/ test/",
+    "verify": "npm run typecheck && npm run lint && npm test",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "ccusage": "20.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "oxlint": "^1.67.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.7"
+  }
+}

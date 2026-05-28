@@ -27,22 +27,22 @@ jobs:
         run: npm ci
 
       - name: Type check
-        run: npm run typecheck
+        run: npm run typecheck --workspaces --if-present
 
       - name: Lint
-        run: npm run lint
+        run: npm run lint --workspaces --if-present
 
       - name: Test
-        run: npm test
+        run: npm run test --workspaces --if-present
 
       - name: Build
-        run: npm run build
+        run: npm run build --workspaces --if-present
 
       - name: Smoke-test bin shim via symlink
         run: |
-          ln -s "$PWD/dist/index.js" /tmp/usage-fyi-symlink-test
+          ln -s "$PWD/packages/cli/dist/index.js" /tmp/usage-fyi-symlink-test
           out=$(/tmp/usage-fyi-symlink-test --version)
-          expected="$(node -p "require('./package.json').version")"
+          expected="$(node -p "require('./packages/cli/package.json').version")"
           if [ "$out" != "$expected" ]; then
             echo "Expected '$expected', got '$out' — bin entrypoint did not invoke run()."
             exit 1
