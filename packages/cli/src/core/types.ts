@@ -1,39 +1,12 @@
-// Canonical persisted entity types — mirrors docs/04-data-model.md exactly.
-// Every persisted document carries schema: "<name>/<int>".
+// Producer-only persisted entity types — mirrors docs/04-data-model.md.
 //
-// The wire-shape types (Snapshot, DailyEntry, ModelBreakdown, Style and their
-// supporting enums/interfaces) now live in @usage-fyi/wire ([docs/27]) and are
-// re-exported below so local imports of `./types.js` continue to resolve.
-// Producer-only types (Link, User, Profile, CollectorToken, Event,
-// InterestSignal) stay local.
+// Wire-shape types (Snapshot, DailyEntry, ModelBreakdown, Style + supporting
+// enums/interfaces) live in @usage-fyi/wire ([docs/27]) and are imported
+// directly from there; this file only carries the local-only entities.
 
-// ─── Wire-shape re-exports (@usage-fyi/wire) ─────────────────────────────────
-
-export {
-  DESIGNS,
-  THEMES,
-  FORMATS,
-  ORIGINS,
-  DEFAULT_STYLE,
-} from "@usage-fyi/wire";
-export type {
-  Design,
-  Theme,
-  Format,
-  Origin,
-  Style,
-  ModelBreakdown,
-  DailyEntry,
-  WindowAgg,
-  Totals,
-  Derived,
-  Snapshot,
-} from "@usage-fyi/wire";
+import type { Style, Origin } from "@usage-fyi/wire";
 
 // ─── Link ─────────────────────────────────────────────────────────────────────
-
-import type { Style } from "@usage-fyi/wire";
-import type { Origin } from "@usage-fyi/wire";
 
 export interface Link {
   schema: "link/1";
