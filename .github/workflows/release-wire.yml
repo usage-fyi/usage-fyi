@@ -1,0 +1,54 @@
+name: Release wire
+
+on:
+  push:
+    tags:
+      - 'wire-v*'
+
+jobs:
+  publish:
+    name: Publish "@usage-fyi/wire" to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - name: Upgrade npm (OIDC trusted publishing requires >= 11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches packages/wire/package.json
+        run: |
+          PKG_VERSION="wire-v$(node -p "require('./packages/wire/package.json').version")"
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "Tag $TAG does not match packages/wire/package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Type check
+        run: npm run typecheck --workspace=@usage-fyi/wire
+
+      - name: Lint
+        run: npm run lint --workspace=@usage-fyi/wire
+
+      - name: Test
+        run: npm run test --workspace=@usage-fyi/wire
+
+      - name: Build
+        run: npm run build --workspace=@usage-fyi/wire
+
+      - name: Publish
+        run: npm publish --access public --workspace=@usage-fyi/wire
