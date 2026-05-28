@@ -1,5 +1,5 @@
-import type { Snapshot, Style, Design, Theme, Format } from "./types.js";
-import { DESIGNS, THEMES, FORMATS, DEFAULT_STYLE } from "./types.js";
+import type { Snapshot, Style, Design, Theme, Format } from "@usage-fyi/wire";
+import { DESIGNS, THEMES, FORMATS, DEFAULT_STYLE } from "@usage-fyi/wire";
 
 // ─── validateSnapshot ──────────────────────────────────────────────────────
 

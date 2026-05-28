@@ -5,7 +5,7 @@ import type {
   Totals,
   WindowAgg,
   Origin,
-} from "./types.js";
+} from "@usage-fyi/wire";
 
 // ─── Raw input shapes ─────────────────────────────────────────────────────
 
