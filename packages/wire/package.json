@@ -40,6 +40,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src/ test/",
     "verify": "npm run typecheck && npm run lint && npm test",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
