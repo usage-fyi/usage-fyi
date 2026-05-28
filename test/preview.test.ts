@@ -3,12 +3,12 @@ import type { Snapshot } from "../src/core/index.js";
 import { buildHtml } from "../src/preview.js";
 
 const SNAPSHOT: Snapshot = {
-  schema: "snapshot/1",
+  schema: "snapshot/2",
   generatedAt: "2026-05-19T04:00:00Z",
   origin: "tool-collected",
   source: {
     tool: "ccusage",
-    adapter: "1",
+    adapter: "2",
     range: ["2026-04-19", "2026-05-18"],
   },
   daily: [
@@ -22,6 +22,18 @@ const SNAPSHOT: Snapshot = {
       c: 1.5,
       m: ["claude-opus-4-7"],
       a: ["claude"],
+      mb: [
+        {
+          a: "claude",
+          m: "claude-opus-4-7",
+          i: 1000,
+          o: 500,
+          cc: 100,
+          cr: 200,
+          t: 1800,
+          c: 1.5,
+        },
+      ],
     },
   ],
   totals: { i: 1000, o: 500, cc: 100, cr: 200, t: 1800, c: 1.5 },

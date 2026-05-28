@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { text } from "node:stream/consumers";
 import { fileURLToPath } from "node:url";
-import { slim, type RawCcusage } from "../core/index.js";
+import { slim, type RawCcusage, type RawAgentDaily } from "../core/index.js";
 import type { UsageAdapter, CollectOpts } from "./types.js";
 
 export class CollectError extends Error {
@@ -31,8 +31,7 @@ function resolveCcusageBin(): string {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
     bin?: string | Record<string, string>;
   };
-  const binRel =
-    typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.ccusage;
+  const binRel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.ccusage;
   if (!binRel) {
     throw new Error("ccusage package has no `ccusage` bin entry");
   }
@@ -68,6 +67,26 @@ export function parseCollectOutput(
   return parsed as RawCcusage;
 }
 
+/**
+ * Parse one per-agent subcommand JSON. These schemas vary across agents
+ * (claude/gemini/kimi/qwen/pi share one shape; codex uses a different one),
+ * but we only need to extract (date, model) attribution from them — never
+ * numbers — so a lenient cast is enough. On any parse failure we return an
+ * empty payload so the attribution lookup falls back to prefix inference
+ * rather than blowing up the whole publish.
+ */
+function parseAgentOutput(
+  stdout: string,
+  exitCode: number,
+): RawAgentDaily {
+  if (exitCode !== 0 || stdout.trim() === "") return { daily: [] };
+  try {
+    return JSON.parse(stdout) as RawAgentDaily;
+  } catch {
+    return { daily: [] };
+  }
+}
+
 interface RunResult {
   exitCode: number;
   stdout: string;
@@ -78,7 +97,10 @@ interface RunResult {
  * Spawn ccusage under the current runtime (`process.execPath` is `node` on
  * Node and `bun` on Bun). Times out via `proc.kill()` after `timeoutMs`.
  */
-async function runCcusage(args: string[], timeoutMs: number): Promise<RunResult> {
+async function runCcusage(
+  args: string[],
+  timeoutMs: number,
+): Promise<RunResult> {
   const proc = spawn(process.execPath, [resolveCcusageBin(), ...args], {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -99,6 +121,31 @@ async function runCcusage(args: string[], timeoutMs: number): Promise<RunResult>
   }
 }
 
+/**
+ * Subset of ccusage subcommands that map to a known harness agent id. The
+ * unified `ccusage daily --json` tags each day's metadata.agents[] with
+ * exactly these strings, so we use them as both the lookup key and the
+ * subcommand to invoke. Any agent appearing in metadata.agents that is NOT
+ * in this list falls through to name-prefix inference in slim().
+ */
+const KNOWN_AGENT_SUBCOMMANDS = new Set([
+  "claude",
+  "codex",
+  "opencode",
+  "amp",
+  "droid",
+  "codebuff",
+  "hermes",
+  "pi",
+  "goose",
+  "kilo",
+  "copilot",
+  "gemini",
+  "kimi",
+  "qwen",
+  "openclaw",
+]);
+
 export const ccusageAdapter: UsageAdapter<RawCcusage> = {
   id: "ccusage",
 
@@ -112,15 +159,53 @@ export const ccusageAdapter: UsageAdapter<RawCcusage> = {
   },
 
   async collect(opts: CollectOpts): Promise<RawCcusage> {
-    const args = ["daily", "--json"];
-    if (opts.from) args.push("--since", opts.from);
-    if (opts.to) args.push("--until", opts.to);
+    const rangeArgs: string[] = [];
+    if (opts.from) rangeArgs.push("--since", opts.from);
+    if (opts.to) rangeArgs.push("--until", opts.to);
 
-    const { exitCode, stdout, stderr } = await runCcusage(
-      args,
+    // 1) Unified daily — source of truth for per-(date, model) numbers.
+    const unified = await runCcusage(
+      ["daily", "--json", ...rangeArgs],
       COLLECT_TIMEOUT_MS,
     );
-    return parseCollectOutput(stdout, stderr, exitCode);
+    const raw = parseCollectOutput(
+      unified.stdout,
+      unified.stderr,
+      unified.exitCode,
+    );
+
+    // 2) Union of agents across the range (from unified daily's metadata).
+    const agentSet = new Set<string>();
+    for (const d of raw.daily ?? []) {
+      for (const a of d.metadata?.agents ?? []) {
+        if (KNOWN_AGENT_SUBCOMMANDS.has(a)) agentSet.add(a);
+      }
+    }
+
+    // 3) For each agent, fetch its per-agent breakdown in parallel. Treat
+    //    the numbers in these as informational only; we use them as a
+    //    (date, model) → agent attribution lookup. Failures are non-fatal;
+    //    a missing payload just falls back to prefix inference for that
+    //    agent.
+    const agents = [...agentSet].sort();
+    const perAgentResults = await Promise.all(
+      agents.map(async (agent) => {
+        try {
+          const { stdout, exitCode } = await runCcusage(
+            [agent, "daily", "--json", ...rangeArgs],
+            COLLECT_TIMEOUT_MS,
+          );
+          return [agent, parseAgentOutput(stdout, exitCode)] as const;
+        } catch {
+          return [agent, { daily: [] } satisfies RawAgentDaily] as const;
+        }
+      }),
+    );
+
+    const perAgent: Record<string, RawAgentDaily> = {};
+    for (const [agent, payload] of perAgentResults) perAgent[agent] = payload;
+
+    return { ...raw, perAgent };
   },
 
   toSnapshot(raw: RawCcusage) {
