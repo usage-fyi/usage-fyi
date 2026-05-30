@@ -94,9 +94,12 @@ describe("full publish flow — success path", () => {
     expect(stdout.join("\n")).toContain(`${server.url}/s/accept-id`);
   });
 
-  it("prints the manageKey", async () => {
+  it("carries the manage key only in the viewer URL fragment, not as a separate line", async () => {
     const { stdout } = await runFull(["--no-open"], server.url);
-    expect(stdout.join("\n")).toContain("accept-key");
+    const out = stdout.join("\n");
+    expect(out).toContain(`${server.url}/s/accept-id#mk=accept-key`);
+    expect(out).not.toContain("manageKey");
+    expect(out).not.toContain("unlisted");
   });
 
   it("printed snapshot origin is tool-collected", async () => {
