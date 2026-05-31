@@ -99,10 +99,6 @@ export async function run(argv: string[]): Promise<number> {
       console.log(JSON.stringify({ id, url, manageKey, viewerUrl }));
     } else {
       console.log(`${url}#mk=${encodeURIComponent(manageKey)}`);
-      console.log(`manageKey: ${manageKey}`);
-      console.log(
-        "This link is unlisted. The manage key above is the only way to delete it — save it now.",
-      );
       if (parsed.open) {
         await openBrowser(viewerUrl);
       }

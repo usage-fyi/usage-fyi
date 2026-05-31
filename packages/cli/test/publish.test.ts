@@ -151,34 +151,14 @@ describe("run() — output format", () => {
     }
   });
 
-  it("human output includes the manageKey", async () => {
+  it("human output does not mention the manage key", async () => {
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await run(["--no-open"]);
       const logged = spy.mock.calls.flat().join("\n");
-      expect(logged).toContain("out-key");
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it("human output includes a note that the link is unlisted", async () => {
-    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
-    try {
-      await run(["--no-open"]);
-      const logged = spy.mock.calls.flat().join("\n");
-      expect(logged).toContain("unlisted");
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it("human output note mentions the manage key is the only way to delete", async () => {
-    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
-    try {
-      await run(["--no-open"]);
-      const logged = spy.mock.calls.flat().join("\n");
-      expect(logged).toContain("only way to delete");
+      expect(logged).not.toContain("manageKey");
+      expect(logged).not.toContain("unlisted");
+      expect(logged).not.toContain("only way to delete");
     } finally {
       spy.mockRestore();
     }
