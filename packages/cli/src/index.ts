@@ -16,6 +16,7 @@ import { publishSnapshot, PublishError } from "./publish.js";
 import { EXIT, resolvePublishError } from "./errors.js";
 import { openBrowser } from "./open.js";
 import { runPreview } from "./preview.js";
+import { runPrStats } from "./commands/prStats.js";
 
 registerAdapter(ccusageAdapter);
 
@@ -43,6 +44,10 @@ export async function run(argv: string[]): Promise<number> {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Error: ${msg}`);
     return EXIT.ARGS;
+  }
+
+  if (parsed.command === "pr-stats") {
+    return runPrStats({ json: parsed.json });
   }
 
   const config = await loadConfig();

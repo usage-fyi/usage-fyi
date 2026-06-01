@@ -18,6 +18,10 @@ describe("parseArgs — defaults", () => {
   it("preview is false by default", () => {
     expect(parseArgs([]).preview).toBe(false);
   });
+
+  it("command defaults to publish", () => {
+    expect(parseArgs([]).command).toBe("publish");
+  });
 });
 
 describe("parseArgs — boolean flags", () => {
@@ -121,5 +125,36 @@ describe("parseArgs — --help", () => {
       err = e;
     }
     expect((err as HelpRequestedError).text).toContain("bunx usage-fyi");
+  });
+});
+
+describe("parseArgs — pr-stats subcommand", () => {
+  it("parses pr-stats as the command", () => {
+    const args = parseArgs(["pr-stats"]);
+    expect(args.command).toBe("pr-stats");
+  });
+
+  it("parses --json for pr-stats", () => {
+    const args = parseArgs(["pr-stats", "--json"]);
+    expect(args.command).toBe("pr-stats");
+    expect(args.json).toBe(true);
+  });
+
+  it("rejects unknown flags after pr-stats", () => {
+    expect(() => parseArgs(["pr-stats", "--preview"])).toThrow(/Unknown flag/);
+  });
+
+  it("rejects unknown subcommands", () => {
+    expect(() => parseArgs(["unknown-cmd"])).toThrow(/Unknown command/);
+  });
+
+  it("pr-stats --help shows pr-stats help text", () => {
+    let err: unknown;
+    try {
+      parseArgs(["pr-stats", "--help"]);
+    } catch (e) {
+      err = e;
+    }
+    expect((err as HelpRequestedError).text).toContain("pr-stats");
   });
 });
