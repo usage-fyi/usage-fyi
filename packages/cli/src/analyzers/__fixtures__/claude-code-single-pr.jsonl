@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-05-28T05:50:00.000Z","cwd":"/Users/alice/work/myrepo"}
+{"type":"assistant","timestamp":"2026-05-28T05:52:00.000Z","cwd":"/Users/alice/work/myrepo"}
+{"type":"pr-link","sessionId":"session-abc-123","prNumber":419,"prUrl":"https://github.com/owner/repo/pull/419","prRepository":"owner/repo","timestamp":"2026-05-28T05:56:11.425Z"}
