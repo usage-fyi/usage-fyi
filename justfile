@@ -1,0 +1,2 @@
+verify:
+    npm run verify
