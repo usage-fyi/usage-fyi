@@ -1,8 +1,10 @@
 ---
-status: waiting
+status: approved
 complexity: L
 source: .harness/docs/raw-tasks.md
 source_item: line 1
+approved: 2026-06-01
+approved_by: plan-generate
 ---
 
 # PR creation stats from conversation logs (per-project, time-to-PR)
