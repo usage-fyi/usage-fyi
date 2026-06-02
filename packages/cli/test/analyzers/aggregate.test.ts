@@ -626,6 +626,7 @@ function makeWindowResult(
       cacheHitRatio: null,
       tokensPerActiveMinute: null,
       tokensAttributed: "windowed",
+      estimatedCostUsd: null,
     },
     perPR: [],
     overhead: {
@@ -684,6 +685,7 @@ describe("aggregateTokensByProject() — basic rollup", () => {
         cacheHitRatio: null,
         tokensPerActiveMinute: null,
         tokensAttributed: "windowed",
+        estimatedCostUsd: null,
       },
     });
     const result = aggregateTokensByProject([session]);
@@ -747,6 +749,7 @@ describe("aggregateTokensByProject() — efficiency ratios", () => {
         cacheHitRatio: null,
         tokensPerActiveMinute: null,
         tokensAttributed: "windowed",
+        estimatedCostUsd: null,
       },
     });
     const productive = windowSession(
@@ -887,5 +890,223 @@ describe("aggregateTokensByProject() — multiple projects", () => {
     expect(result["org/b"]).toBeDefined();
     expect(result["org/b"]!.dryTokens.totalTokens).toBe(135);
     expect(result["org/a"]!.dryTokens.totalTokens).toBe(0);
+  });
+});
+
+// ─── Pricing support ─────────────────────────────────────────────────────────
+
+/** Synthetic pricing fn: 0.001 $/token for "claude-opus-4-8", unknown otherwise. */
+function mockPricingFn(
+  model: string,
+  totalTokens: number,
+): { usd: number | null; flag?: "unknown-model" | "blended-rate" } {
+  if (model === "claude-opus-4-8")
+    return { usd: 0.001 * totalTokens, flag: "blended-rate" };
+  return { usd: null, flag: "unknown-model" };
+}
+
+describe("windowSession() — pricing", () => {
+  it("populates estimatedCostUsd on a PR window with a known model", () => {
+    // 270 tokens × $0.001/token = $0.270
+    const tokens = [
+      makeToken("2026-06-01T00:30:00.000Z"), // 135 tokens, model claude-opus-4-8
+      makeToken("2026-06-01T00:45:00.000Z"), // 135 tokens
+    ];
+    const prs = [
+      {
+        prUrl: "https://github.com/a/b/pull/1",
+        prTimestamp: "2026-06-01T01:00:00.000Z",
+      },
+    ];
+    const result = windowSession(
+      makeInput({ tokens, prs, pricingFn: mockPricingFn }),
+    );
+    expect(result.perPR[0]!.estimatedCostUsd).toBeCloseTo(0.27, 10);
+    expect(result.perPR[0]!.pricingFlag).toBe("blended-rate");
+  });
+
+  it("returns null cost with unknown-model flag for an unrecognised model", () => {
+    const token = makeToken("2026-06-01T00:30:00.000Z", {
+      model: "mystery-model",
+    });
+    const prs = [
+      {
+        prUrl: "https://github.com/a/b/pull/1",
+        prTimestamp: "2026-06-01T01:00:00.000Z",
+      },
+    ];
+    const result = windowSession(
+      makeInput({ tokens: [token], prs, pricingFn: mockPricingFn }),
+    );
+    expect(result.perPR[0]!.estimatedCostUsd).toBeNull();
+    expect(result.perPR[0]!.pricingFlag).toBe("unknown-model");
+  });
+
+  it("leaves cost null when no pricingFn provided", () => {
+    const tokens = [makeToken("2026-06-01T00:30:00.000Z")];
+    const prs = [
+      {
+        prUrl: "https://github.com/a/b/pull/1",
+        prTimestamp: "2026-06-01T01:00:00.000Z",
+      },
+    ];
+    const result = windowSession(makeInput({ tokens, prs }));
+    expect(result.perPR[0]!.estimatedCostUsd).toBeNull();
+    expect(result.perPR[0]!.pricingFlag).toBeUndefined();
+    expect(result.session.estimatedCostUsd).toBeNull();
+  });
+
+  it("session cost equals window cost plus overhead cost", () => {
+    // token A at 0:30 → window for PR#1 (135 tokens)
+    // token B at 1:30 → overhead (135 tokens)
+    // total session cost = (135 + 135) × 0.001 = 0.270
+    const tokens = [
+      makeToken("2026-06-01T00:30:00.000Z"), // 135 tokens → window
+      makeToken("2026-06-01T01:30:00.000Z"), // 135 tokens → overhead
+    ];
+    const prs = [
+      {
+        prUrl: "https://github.com/a/b/pull/1",
+        prTimestamp: "2026-06-01T01:00:00.000Z",
+      },
+    ];
+    const result = windowSession(
+      makeInput({ tokens, prs, pricingFn: mockPricingFn }),
+    );
+    expect(result.perPR[0]!.estimatedCostUsd).toBeCloseTo(0.135, 10);
+    expect(result.session.estimatedCostUsd).toBeCloseTo(0.27, 10);
+    expect(result.session.pricingFlag).toBe("blended-rate");
+  });
+
+  it("session cost is null when overhead has an unknown model", () => {
+    const tokens = [
+      makeToken("2026-06-01T00:30:00.000Z"), // window: known model
+      makeToken("2026-06-01T01:30:00.000Z", { model: "mystery" }), // overhead: unknown
+    ];
+    const prs = [
+      {
+        prUrl: "https://github.com/a/b/pull/1",
+        prTimestamp: "2026-06-01T01:00:00.000Z",
+      },
+    ];
+    const result = windowSession(
+      makeInput({ tokens, prs, pricingFn: mockPricingFn }),
+    );
+    expect(result.session.estimatedCostUsd).toBeNull();
+    expect(result.session.pricingFlag).toBe("unknown-model");
+  });
+
+  it("dry session cost uses session-level tokens and model", () => {
+    // dry session: 135 tokens with known model
+    const tokens = [makeToken("2026-06-01T00:30:00.000Z")];
+    const result = windowSession(
+      makeInput({ tokens, pricingFn: mockPricingFn }),
+    );
+    expect(result.isDrySession).toBe(true);
+    expect(result.session.estimatedCostUsd).toBeCloseTo(0.135, 10);
+    expect(result.session.pricingFlag).toBe("blended-rate");
+  });
+
+  it("multi-model window averages per-model USD estimates", () => {
+    // Two models in the window: claude-opus-4-8 (known) and mystery (unknown)
+    // → average unknown → null
+    const tokens = [
+      makeToken("2026-06-01T00:30:00.000Z", { model: "claude-opus-4-8" }),
+      makeToken("2026-06-01T00:45:00.000Z", { model: "mystery" }),
+    ];
+    const prs = [
+      {
+        prUrl: "https://github.com/a/b/pull/1",
+        prTimestamp: "2026-06-01T01:00:00.000Z",
+      },
+    ];
+    const result = windowSession(
+      makeInput({ tokens, prs, pricingFn: mockPricingFn }),
+    );
+    expect(result.perPR[0]!.estimatedCostUsd).toBeNull();
+    expect(result.perPR[0]!.pricingFlag).toBe("unknown-model");
+  });
+});
+
+describe("aggregateTokensByProject() — pricing", () => {
+  it("sums session costs across sessions for a project", () => {
+    const r1 = windowSession(
+      makeInput({
+        tokens: [makeToken("2026-06-01T00:30:00.000Z")], // 135 tokens → window
+        prs: [
+          {
+            prUrl: "https://github.com/a/b/pull/1",
+            prTimestamp: "2026-06-01T01:00:00.000Z",
+          },
+        ],
+        pricingFn: mockPricingFn,
+      }),
+    );
+    const r2 = windowSession(
+      makeInput({
+        sessionId: "s2",
+        tokens: [makeToken("2026-06-01T00:30:00.000Z")], // another 135 tokens
+        prs: [
+          {
+            prUrl: "https://github.com/a/b/pull/2",
+            prTimestamp: "2026-06-01T01:00:00.000Z",
+          },
+        ],
+        pricingFn: mockPricingFn,
+      }),
+    );
+    const stats = aggregateTokensByProject([r1, r2])["org/repo"]!;
+    expect(stats.estimatedCostUsd).toBeCloseTo(0.135 * 2, 10);
+    expect(stats.pricingFlag).toBe("blended-rate");
+  });
+
+  it("returns null project cost when any session has unknown model", () => {
+    const knownSession = windowSession(
+      makeInput({
+        tokens: [makeToken("2026-06-01T00:30:00.000Z")],
+        prs: [
+          {
+            prUrl: "https://github.com/a/b/pull/1",
+            prTimestamp: "2026-06-01T01:00:00.000Z",
+          },
+        ],
+        pricingFn: mockPricingFn,
+      }),
+    );
+    const unknownSession = windowSession(
+      makeInput({
+        sessionId: "s2",
+        tokens: [makeToken("2026-06-01T00:30:00.000Z", { model: "mystery" })],
+        prs: [
+          {
+            prUrl: "https://github.com/a/b/pull/2",
+            prTimestamp: "2026-06-01T01:00:00.000Z",
+          },
+        ],
+        pricingFn: mockPricingFn,
+      }),
+    );
+    const stats = aggregateTokensByProject([knownSession, unknownSession])[
+      "org/repo"
+    ]!;
+    expect(stats.estimatedCostUsd).toBeNull();
+    expect(stats.pricingFlag).toBe("unknown-model");
+  });
+
+  it("returns null cost with no pricingFlag when no pricingFn was used", () => {
+    const r = windowSession(
+      makeInput({
+        tokens: [makeToken("2026-06-01T00:30:00.000Z")],
+        prs: [
+          {
+            prUrl: "https://github.com/a/b/pull/1",
+            prTimestamp: "2026-06-01T01:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const stats = aggregateTokensByProject([r])["org/repo"]!;
+    expect(stats.estimatedCostUsd).toBeNull();
+    expect(stats.pricingFlag).toBeUndefined();
   });
 });

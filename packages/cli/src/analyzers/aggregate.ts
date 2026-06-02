@@ -168,6 +168,12 @@ export function aggregate(
 
 // ─── Token-windowing types ───────────────────────────────────────────────────
 
+/** Synchronous pricing function injected by the IO layer. */
+type PricingFn = (
+  model: string,
+  totalTokens: number,
+) => { usd: number | null; flag?: "unknown-model" | "blended-rate" };
+
 export interface PRInput {
   prUrl: string;
   prTimestamp: string;
@@ -180,6 +186,8 @@ export interface WindowSessionInput {
   sessionEnd: string | null;
   prs: PRInput[];
   tokens: TokenEvent[];
+  /** Optional pricing function; when absent cost fields are null. */
+  pricingFn?: PricingFn;
 }
 
 export interface PRWindowResult {
@@ -195,6 +203,10 @@ export interface PRWindowResult {
   tokensAttributed: "windowed" | "session-only" | "approximate";
   /** True when every token event in this window had usageMissing. */
   usageMissing: boolean;
+  /** Estimated cost in USD; null when pricingFn unavailable or model unknown. */
+  estimatedCostUsd: number | null;
+  /** "blended-rate" when cost is derived; "unknown-model" when model not in rate map. */
+  pricingFlag?: "unknown-model" | "blended-rate";
 }
 
 export interface SessionStats {
@@ -209,6 +221,10 @@ export interface SessionStats {
   cacheHitRatio: number | null;
   tokensPerActiveMinute: number | null;
   tokensAttributed: "windowed" | "session-only" | "approximate";
+  /** Estimated cost in USD; null when pricingFn unavailable or any model unknown. */
+  estimatedCostUsd: number | null;
+  /** "blended-rate" when cost is derived; "unknown-model" when any model not in rate map. */
+  pricingFlag?: "unknown-model" | "blended-rate";
 }
 
 export interface WindowSessionResult {
@@ -235,6 +251,10 @@ export interface ProjectTokenStats {
   cacheHitRatio: number | null;
   /** outputTokens / totalTokens; null if totalTokens = 0. */
   outputShare: number | null;
+  /** Sum of all session costs; null when pricingFn unavailable or any model unknown. */
+  estimatedCostUsd: number | null;
+  /** "blended-rate" when cost is derived; "unknown-model" when any model not in rate map. */
+  pricingFlag?: "unknown-model" | "blended-rate";
 }
 
 // ─── Token-windowing helpers ─────────────────────────────────────────────────
@@ -296,6 +316,28 @@ function calcCacheHitRatio(b: TokenBreakdown): number | null {
   return denom > 0 ? b.cacheReadTokens / denom : null;
 }
 
+/**
+ * Compute the estimated cost for a set of models and a total token count.
+ *
+ * When multiple models are present their per-model costs are averaged
+ * (equal-split approximation — per-model token counts are not tracked in
+ * PRWindowResult). Returns null with "unknown-model" if any model is absent
+ * from the rate map, or if no models are provided.
+ */
+function computeCost(
+  models: string[],
+  totalTokens: number,
+  pricingFn: PricingFn,
+): { usd: number | null; flag?: "unknown-model" | "blended-rate" } {
+  if (totalTokens === 0) return { usd: 0 };
+  if (models.length === 0) return { usd: null, flag: "unknown-model" };
+  const results = models.map((m) => pricingFn(m, totalTokens));
+  if (results.some((r) => r.usd === null))
+    return { usd: null, flag: "unknown-model" };
+  const avgUsd = results.reduce((s, r) => s + r.usd!, 0) / results.length;
+  return { usd: avgUsd, flag: "blended-rate" };
+}
+
 // ─── windowSession() ────────────────────────────────────────────────────────
 
 /**
@@ -313,7 +355,15 @@ function calcCacheHitRatio(b: TokenBreakdown): number | null {
  * tokensAttributed: "approximate".
  */
 export function windowSession(input: WindowSessionInput): WindowSessionResult {
-  const { sessionId, project, sessionStart, sessionEnd, prs, tokens } = input;
+  const {
+    sessionId,
+    project,
+    sessionStart,
+    sessionEnd,
+    prs,
+    tokens,
+    pricingFn,
+  } = input;
 
   const startMs = parseTs(sessionStart);
   const endMs = sessionEnd != null ? parseTs(sessionEnd) : null;
@@ -328,6 +378,10 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
 
   const buildSession = (
     attributed: "windowed" | "session-only" | "approximate",
+    costResult: {
+      usd: number | null;
+      flag?: "unknown-model" | "blended-rate";
+    } = { usd: null },
   ): SessionStats => ({
     sessionId,
     project,
@@ -343,12 +397,18 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
         ? sessionBreakdown.totalTokens / (durationMs / 60_000)
         : null,
     tokensAttributed: attributed,
+    estimatedCostUsd: costResult.usd,
+    ...(costResult.flag !== undefined ? { pricingFlag: costResult.flag } : {}),
   });
+
+  const sessionCostResult = pricingFn
+    ? computeCost(sessionModels, sessionBreakdown.totalTokens, pricingFn)
+    : { usd: null };
 
   // Dry session — no PRs; all tokens are dry spend.
   if (prs.length === 0) {
     return {
-      session: buildSession("windowed"),
+      session: buildSession("windowed", sessionCostResult),
       perPR: [],
       overhead: zeroBreakdown(),
       overheadSidechain: zeroBreakdown(),
@@ -359,7 +419,7 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
   // Can't window without a parseable session start.
   if (startMs === null) {
     return {
-      session: buildSession("session-only"),
+      session: buildSession("session-only", sessionCostResult),
       perPR: [],
       overhead: zeroBreakdown(),
       overheadSidechain: zeroBreakdown(),
@@ -371,7 +431,7 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
   const prsWithMs = prs.map((pr) => ({ ...pr, tsMs: parseTs(pr.prTimestamp) }));
   if (prsWithMs.some((pr) => pr.tsMs === null)) {
     return {
-      session: buildSession("session-only"),
+      session: buildSession("session-only", sessionCostResult),
       perPR: [],
       overhead: zeroBreakdown(),
       overheadSidechain: zeroBreakdown(),
@@ -387,7 +447,7 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
   }));
   if (tokensWithMs.some((t) => t.tsMs === null)) {
     return {
-      session: buildSession("session-only"),
+      session: buildSession("session-only", sessionCostResult),
       perPR: [],
       overhead: zeroBreakdown(),
       overheadSidechain: zeroBreakdown(),
@@ -400,7 +460,7 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
   for (let i = 1; i < sortedTokens.length; i++) {
     if (sortedTokens[i]!.tsMs! < sortedTokens[i - 1]!.tsMs!) {
       return {
-        session: buildSession("session-only"),
+        session: buildSession("session-only", sessionCostResult),
         perPR: [],
         overhead: zeroBreakdown(),
         overheadSidechain: zeroBreakdown(),
@@ -445,6 +505,15 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
     const msToPR = groupTs - windowStartMs;
     const msFromPrevPR = prevPrMs !== null ? groupTs - prevPrMs : null;
 
+    // Cost for the full window; scale by 1/groupSize for same-timestamp PRs.
+    const windowTokensForCost =
+      groupSize === 1
+        ? windowBreakdown.totalTokens
+        : windowBreakdown.totalTokens / groupSize;
+    const windowCost = pricingFn
+      ? computeCost(windowModels, windowTokensForCost, pricingFn)
+      : { usd: null };
+
     for (const pr of group) {
       perPR.push({
         prUrl: pr.prUrl,
@@ -463,6 +532,10 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
         models: windowModels,
         tokensAttributed: groupSize > 1 ? "approximate" : "windowed",
         usageMissing,
+        estimatedCostUsd: windowCost.usd,
+        ...(windowCost.flag !== undefined
+          ? { pricingFlag: windowCost.flag }
+          : {}),
       });
     }
 
@@ -479,8 +552,38 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
     overheadEvents.filter((t) => t.isSidechain === true).map((t) => t.tokens),
   );
 
+  // Session cost = sum of per-PR window costs + overhead cost.
+  // Propagate null if any component is unavailable or unknown.
+  let windowedSessionCost: {
+    usd: number | null;
+    flag?: "unknown-model" | "blended-rate";
+  } = { usd: null };
+  if (pricingFn) {
+    let totalUsd = 0;
+    let anyNull = false;
+    for (const pr of perPR) {
+      if (pr.estimatedCostUsd === null) {
+        anyNull = true;
+        break;
+      }
+      totalUsd += pr.estimatedCostUsd;
+    }
+    if (!anyNull) {
+      const overheadModels = uniqueModels(overheadEvents);
+      const oc = computeCost(overheadModels, overhead.totalTokens, pricingFn);
+      if (oc.usd === null) {
+        anyNull = true;
+      } else {
+        totalUsd += oc.usd;
+      }
+    }
+    windowedSessionCost = anyNull
+      ? { usd: null, flag: "unknown-model" }
+      : { usd: totalUsd, flag: "blended-rate" };
+  }
+
   return {
-    session: buildSession(globalAttributed),
+    session: buildSession(globalAttributed, windowedSessionCost),
     perPR,
     overhead,
     overheadSidechain,
@@ -508,6 +611,11 @@ export function aggregateTokensByProject(
     overheadTokens: TokenBreakdown;
     sidechainTokens: TokenBreakdown;
     prCount: number;
+    /** Running cost sum; becomes null if any session has unknown-model. */
+    estimatedCostUsd: number | null;
+    /** True once any session's pricingFlag is set (pricing was attempted). */
+    pricingAttempted: boolean;
+    anyUnknownModel: boolean;
   }
 
   const byProject = new Map<string, Acc>();
@@ -521,6 +629,9 @@ export function aggregateTokensByProject(
         overheadTokens: zeroBreakdown(),
         sidechainTokens: zeroBreakdown(),
         prCount: 0,
+        estimatedCostUsd: 0,
+        pricingAttempted: false,
+        anyUnknownModel: false,
       };
       byProject.set(project, acc);
     }
@@ -552,6 +663,17 @@ export function aggregateTokensByProject(
       acc.overheadTokens = addBreakdowns(acc.overheadTokens, overhead);
       acc.prCount += perPR.length;
     }
+
+    // Accumulate session cost. Null-propagate on unknown model.
+    if (session.pricingFlag !== undefined) acc.pricingAttempted = true;
+    if (session.pricingFlag === "unknown-model") {
+      acc.anyUnknownModel = true;
+    } else if (
+      session.estimatedCostUsd !== null &&
+      acc.estimatedCostUsd !== null
+    ) {
+      acc.estimatedCostUsd += session.estimatedCostUsd;
+    }
   }
 
   const result: Record<string, ProjectTokenStats> = {};
@@ -568,6 +690,17 @@ export function aggregateTokensByProject(
       addBreakdowns(productiveTokens, dryTokens),
       overheadTokens,
     );
+
+    const projectCostUsd = !acc.pricingAttempted
+      ? null
+      : acc.anyUnknownModel
+        ? null
+        : acc.estimatedCostUsd;
+    const projectPricingFlag = !acc.pricingAttempted
+      ? undefined
+      : acc.anyUnknownModel
+        ? ("unknown-model" as const)
+        : ("blended-rate" as const);
 
     result[project] = {
       productiveTokens,
@@ -586,6 +719,10 @@ export function aggregateTokensByProject(
           : null,
       cacheHitRatio: calcCacheHitRatio(totalTokens),
       outputShare: calcOutputShare(totalTokens),
+      estimatedCostUsd: projectCostUsd,
+      ...(projectPricingFlag !== undefined
+        ? { pricingFlag: projectPricingFlag }
+        : {}),
     };
   }
 
