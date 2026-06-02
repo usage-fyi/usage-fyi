@@ -6,8 +6,7 @@ import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const fixture = (name: string) =>
-  join(__dirname, "..", "__fixtures__", name);
+const fixture = (name: string) => join(__dirname, "..", "__fixtures__", name);
 
 describe("scanClaudeCodeSession", () => {
   it("extracts session metadata and a single PR event", async () => {
@@ -59,7 +58,7 @@ describe("scanClaudeCodeSession", () => {
   });
 
   it("skips malformed JSON lines silently", async () => {
-    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const debugSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const result = await scanClaudeCodeSession(
       fixture("claude-code-malformed.jsonl"),
     );
@@ -72,17 +71,17 @@ describe("scanClaudeCodeSession", () => {
     debugSpy.mockRestore();
   });
 
-  it("warns via console.debug when fewer than 50% of entries have timestamps", async () => {
-    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+  it("warns via console.error when fewer than 50% of entries have timestamps", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     // 3 lines, 2 with timestamps → 66%, no warning.
     await scanClaudeCodeSession(fixture("claude-code-single-pr.jsonl"));
-    expect(debugSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
 
     // 3 lines in malformed fixture, 2 with timestamps → 66%, no warning.
     await scanClaudeCodeSession(fixture("claude-code-malformed.jsonl"));
-    expect(debugSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
 
-    debugSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 });
