@@ -73,4 +73,79 @@ describe("scanCodexSession", () => {
     );
     expect(result.sessionId).toBe("codex-session-001");
   });
+
+  describe("token extraction", () => {
+    it("extracts token events from event_msg with token_count payload", async () => {
+      const result = await scanCodexSession(
+        fixture("codex-with-tokens.jsonl"),
+      );
+
+      expect(result.tokens).toHaveLength(2);
+
+      // First event: cumulative is the delta from zero.
+      const first = result.tokens[0]!;
+      expect(first.source).toBe("codex");
+      expect(first.timestamp).toBe("2026-05-28T16:00:00.000Z");
+      expect(first.model).toBe("gpt-4o");
+      expect(first.tokens.inputTokens).toBe(100);
+      expect(first.tokens.outputTokens).toBe(30);
+      expect(first.tokens.cacheReadTokens).toBe(50);
+      expect(first.tokens.cacheCreationTokens).toBe(0);
+      expect(first.tokens.reasoningTokens).toBe(0);
+      expect(first.tokens.totalTokens).toBe(180); // 100+30+50+0
+      expect(first.usageMissing).toBeUndefined();
+
+      // Second event: delta from first cumulative (200-100, 80-50, 60-30, 5-0).
+      const second = result.tokens[1]!;
+      expect(second.tokens.inputTokens).toBe(100);
+      expect(second.tokens.outputTokens).toBe(30);
+      expect(second.tokens.cacheReadTokens).toBe(30);
+      expect(second.tokens.reasoningTokens).toBe(5);
+      expect(second.tokens.totalTokens).toBe(165); // 100+30+30+5
+    });
+
+    it("surfaces session-level model from session_meta", async () => {
+      const result = await scanCodexSession(
+        fixture("codex-with-tokens.jsonl"),
+      );
+
+      expect(result.tokens.every((t) => t.model === "gpt-4o")).toBe(true);
+    });
+
+    it("emits zero-token event with usageMissing when total_token_usage is absent", async () => {
+      const result = await scanCodexSession(
+        fixture("codex-missing-usage.jsonl"),
+      );
+
+      // First event_msg has no total_token_usage → usageMissing.
+      expect(result.tokens).toHaveLength(2);
+      const first = result.tokens[0]!;
+      expect(first.usageMissing).toBe(true);
+      expect(first.tokens.totalTokens).toBe(0);
+      expect(first.model).toBeNull(); // no model in session_meta for this fixture
+
+      // Second event_msg has usage → normal event.
+      const second = result.tokens[1]!;
+      expect(second.usageMissing).toBeUndefined();
+      expect(second.tokens.inputTokens).toBe(50);
+    });
+
+    it("updates sessionStart/sessionEnd from event_msg timestamps", async () => {
+      const result = await scanCodexSession(
+        fixture("codex-with-tokens.jsonl"),
+      );
+
+      // event_msg at 16:00 is the earliest, response_item at 16:01, event_msg at 16:02.
+      expect(result.sessionStart).toBe("2026-05-28T16:00:00.000Z");
+      expect(result.sessionEnd).toBe("2026-05-28T16:02:00.000Z");
+    });
+
+    it("returns empty tokens for sessions with no event_msg entries", async () => {
+      const result = await scanCodexSession(
+        fixture("codex-single-pr.jsonl"),
+      );
+
+      expect(result.tokens).toHaveLength(0);
+    });
+  });
 });
