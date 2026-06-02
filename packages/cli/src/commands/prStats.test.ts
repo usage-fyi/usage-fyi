@@ -6,7 +6,14 @@ import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const fixturesDir = join(__dirname, "..", "..", "src", "analyzers", "__fixtures__");
+const fixturesDir = join(
+  __dirname,
+  "..",
+  "..",
+  "src",
+  "analyzers",
+  "__fixtures__",
+);
 
 describe("runPrStats", () => {
   it("outputs JSON report when --json is passed", async () => {
@@ -22,7 +29,7 @@ describe("runPrStats", () => {
       expect(spy).toHaveBeenCalled();
       const output = spy.mock.calls[0]![0] as string;
       const parsed = JSON.parse(output);
-      expect(parsed.schema).toBe("pr-stats/1");
+      expect(parsed.schema).toBe("pr-stats/2");
       expect(typeof parsed.byProject).toBe("object");
     } finally {
       spy.mockRestore();
