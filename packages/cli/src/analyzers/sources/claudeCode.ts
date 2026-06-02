@@ -75,12 +75,13 @@ export async function scanClaudeCodeSession(
     }
 
     if (record.type === "pr-link") {
-      const prUrl =
-        typeof record.prUrl === "string" ? record.prUrl : undefined;
+      const prUrl = typeof record.prUrl === "string" ? record.prUrl : undefined;
       const prNumber =
         typeof record.prNumber === "number" ? record.prNumber : undefined;
       const prRepository =
-        typeof record.prRepository === "string" ? record.prRepository : undefined;
+        typeof record.prRepository === "string"
+          ? record.prRepository
+          : undefined;
       const prTimestamp =
         typeof record.timestamp === "string" ? record.timestamp : undefined;
       const prSessionId =
@@ -111,9 +112,10 @@ export async function scanClaudeCodeSession(
   }
 
   if (totalLines > 0 && timestampCount / totalLines < 0.5) {
-    // debug-level warning only
+    // Diagnostic only — write to stderr so it never pollutes machine-readable
+    // stdout (e.g. `pr-stats --json`). console.debug routes to stdout in Node.
     // eslint-disable-next-line no-console
-    console.debug(
+    console.error(
       `Claude Code session ${filePath} has ${timestampCount}/${totalLines} entries with timestamps (< 50%).`,
     );
   }
