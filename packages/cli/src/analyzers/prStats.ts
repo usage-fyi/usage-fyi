@@ -6,7 +6,17 @@ import { promisify } from "node:util";
 import { scanClaudeCodeSession } from "./sources/claudeCode.js";
 import { scanCodexSession } from "./sources/codex.js";
 import { resolveProject } from "./projectResolver.js";
-import { aggregate } from "./aggregate.js";
+import {
+  aggregate,
+  windowSession,
+  aggregateTokensByProject,
+  type SessionStats,
+  type ProjectTokenStats,
+} from "./aggregate.js";
+import { type TokenBreakdown, zeroBreakdown } from "./sources/tokenTypes.js";
+import { loadPricingFn } from "../adapters/ccusage.js";
+
+export type { SessionStats };
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +32,13 @@ export interface PREvent {
   sessionEnd: string; // ISO 8601
   msToFirstPR: number;
   msSessionTotal: number;
+  // Token attribution fields (pr-stats/2)
+  tokens: TokenBreakdown;
+  tokensAttributed: "windowed" | "session-only" | "approximate";
+  models: string[];
+  estimatedCostUsd: number | null;
+  /** ms from the immediately preceding PR; null for the first PR in the session. */
+  msFromPrevPR: number | null;
 }
 
 export interface PRProjectStats {
@@ -30,12 +47,31 @@ export interface PRProjectStats {
   sessionsWithNoPR: number;
   medianMsToFirstPR: number | null;
   p90MsToFirstPR: number | null;
+  // Token efficiency fields (pr-stats/2)
+  productiveTokens: TokenBreakdown;
+  dryTokens: TokenBreakdown;
+  overheadTokens: TokenBreakdown;
+  sidechainTokens: TokenBreakdown;
+  totalTokens: TokenBreakdown;
+  /** dry tokens / total tokens (0..1). */
+  dryTokenShare: number;
+  /** productive tokens / PR count; null if prCount = 0. */
+  tokensPerPR: number | null;
+  /** PRs / million tokens; null if totalTokens = 0. */
+  prsPerMTok: number | null;
+  /** cacheReadTokens / (inputTokens + cacheReadTokens); null if denominator = 0. */
+  cacheHitRatio: number | null;
+  /** outputTokens / totalTokens; null if totalTokens = 0. */
+  outputShare: number | null;
+  estimatedCostUsd: number | null;
+  pricingFlag?: "unknown-model" | "blended-rate";
 }
 
 export interface PRStatsReport {
-  schema: "pr-stats/1";
+  schema: "pr-stats/2";
   generatedAt: string;
   events: PREvent[];
+  bySession: SessionStats[];
   byProject: Record<string, PRProjectStats>;
 }
 
@@ -148,9 +184,44 @@ export function formatPRStatsTable(report: PRStatsReport): string {
   return lines.join("\n");
 }
 
+interface SessionData {
+  sessionId: string;
+  project: string;
+  sessionStart: string;
+  sessionEnd: string | null;
+  source: "claude-code" | "codex";
+  rawPrEntries: Array<{
+    prUrl: string;
+    prNumber: number;
+    prRepository: string;
+    timestamp: string;
+    sessionId: string;
+  }>;
+  tokens: import("./sources/tokenTypes.js").TokenEvent[];
+}
+
+const emptyTokenStats: ProjectTokenStats = {
+  productiveTokens: zeroBreakdown(),
+  dryTokens: zeroBreakdown(),
+  overheadTokens: zeroBreakdown(),
+  sidechainTokens: zeroBreakdown(),
+  totalTokens: zeroBreakdown(),
+  dryTokenShare: 0,
+  tokensPerPR: null,
+  prsPerMTok: null,
+  cacheHitRatio: null,
+  outputShare: null,
+  estimatedCostUsd: null,
+};
+
 /**
  * Discover Claude Code and Codex session files, scan them, resolve projects,
  * and aggregate into a PRStatsReport.
+ *
+ * Determinism guarantees:
+ * - `events` sorted by (project, prTimestamp, prUrl).
+ * - `bySession` sorted by (project, sessionId).
+ * - `byProject` keys sorted lexicographically (insertion order = sort order).
  */
 export async function analyzePRStats(
   opts: AnalyzePRStatsOpts = {},
@@ -160,12 +231,9 @@ export async function analyzePRStats(
   const codexDir = opts.codexSessionsDir ?? join(home, ".codex", "sessions");
   const gitRootResolver = opts.gitRootResolver ?? defaultGitRootResolver;
 
-  const events: PREvent[] = [];
-  const sessionMetas: Array<{
-    project: string;
-    sessionId: string;
-    startedAt: string;
-  }> = [];
+  const pricingFn = await loadPricingFn();
+
+  const sessionDataList: SessionData[] = [];
 
   // ─── Claude Code ──────────────────────────────────────────────────────────
   for await (const filePath of findJsonlFiles(claudeDir)) {
@@ -175,41 +243,15 @@ export async function analyzePRStats(
     const projectResult = await resolveProject(result.cwd, { gitRootResolver });
     if (!projectResult) continue;
 
-    const project = projectResult.gitRoot;
-    sessionMetas.push({
-      project,
-      sessionId: result.sessionId ?? basename(result.filePath),
-      startedAt: result.sessionStart,
+    sessionDataList.push({
+      sessionId: result.sessionId ?? basename(filePath),
+      project: projectResult.gitRoot,
+      sessionStart: result.sessionStart,
+      sessionEnd: result.sessionEnd,
+      source: "claude-code",
+      rawPrEntries: result.rawPrEntries,
+      tokens: result.tokens,
     });
-
-    for (const entry of result.rawPrEntries) {
-      const msToFirstPR = Math.max(
-        0,
-        new Date(entry.timestamp).getTime() -
-          new Date(result.sessionStart).getTime(),
-      );
-      const msSessionTotal = result.sessionEnd
-        ? Math.max(
-            0,
-            new Date(result.sessionEnd).getTime() -
-              new Date(result.sessionStart).getTime(),
-          )
-        : 0;
-
-      events.push({
-        prUrl: entry.prUrl,
-        prRepository: entry.prRepository,
-        prNumber: entry.prNumber,
-        sessionId: entry.sessionId,
-        project,
-        source: "claude-code",
-        sessionStart: result.sessionStart,
-        prTimestamp: entry.timestamp,
-        sessionEnd: result.sessionEnd ?? result.sessionStart,
-        msToFirstPR,
-        msSessionTotal,
-      });
-    }
   }
 
   // ─── Codex ────────────────────────────────────────────────────────────────
@@ -220,24 +262,55 @@ export async function analyzePRStats(
     const projectResult = await resolveProject(result.cwd, { gitRootResolver });
     if (!projectResult) continue;
 
-    const project = projectResult.gitRoot;
-    sessionMetas.push({
-      project,
-      sessionId: result.sessionId ?? basename(result.filePath),
-      startedAt: result.sessionStart,
+    sessionDataList.push({
+      sessionId: result.sessionId ?? basename(filePath),
+      project: projectResult.gitRoot,
+      sessionStart: result.sessionStart,
+      sessionEnd: result.sessionEnd,
+      source: "codex",
+      rawPrEntries: result.rawPrEntries,
+      tokens: result.tokens,
     });
+  }
 
-    for (const entry of result.rawPrEntries) {
+  // ─── Window sessions ──────────────────────────────────────────────────────
+  const windowResults = sessionDataList.map((sd) =>
+    windowSession({
+      sessionId: sd.sessionId,
+      project: sd.project,
+      sessionStart: sd.sessionStart,
+      sessionEnd: sd.sessionEnd ?? null,
+      prs: sd.rawPrEntries.map((e) => ({
+        prUrl: e.prUrl,
+        prTimestamp: e.timestamp,
+      })),
+      tokens: sd.tokens,
+      pricingFn,
+    }),
+  );
+
+  // ─── Build events ─────────────────────────────────────────────────────────
+  const events: PREvent[] = [];
+
+  for (let i = 0; i < sessionDataList.length; i++) {
+    const sd = sessionDataList[i]!;
+    const wr = windowResults[i]!;
+
+    // Index window results by prUrl for O(1) lookup.
+    const windowByPrUrl = new Map(wr.perPR.map((pr) => [pr.prUrl, pr]));
+
+    for (const entry of sd.rawPrEntries) {
+      const w = windowByPrUrl.get(entry.prUrl);
       const msToFirstPR = Math.max(
         0,
         new Date(entry.timestamp).getTime() -
-          new Date(result.sessionStart).getTime(),
+          new Date(sd.sessionStart).getTime(),
       );
-      const msSessionTotal = result.sessionEnd
+      const msSessionTotal = sd.sessionEnd
         ? Math.max(
             0,
-            new Date(result.sessionEnd).getTime() -
-              new Date(result.sessionStart).getTime(),
+            new Date(sd.sessionEnd).getTime() -
+              new Date(sd.sessionStart).getTime(),
           )
         : 0;
 
@@ -246,35 +319,96 @@ export async function analyzePRStats(
         prRepository: entry.prRepository,
         prNumber: entry.prNumber,
         sessionId: entry.sessionId,
-        project,
-        source: "codex",
-        sessionStart: result.sessionStart,
+        project: sd.project,
+        source: sd.source,
+        sessionStart: sd.sessionStart,
         prTimestamp: entry.timestamp,
-        sessionEnd: result.sessionEnd ?? result.sessionStart,
+        sessionEnd: sd.sessionEnd ?? sd.sessionStart,
         msToFirstPR,
         msSessionTotal,
+        tokens: w?.tokens ?? zeroBreakdown(),
+        tokensAttributed: w?.tokensAttributed ?? "session-only",
+        models: w?.models ?? [],
+        estimatedCostUsd: w?.estimatedCostUsd ?? null,
+        msFromPrevPR: w?.msFromPrevPR ?? null,
       });
     }
   }
 
-  const agg = aggregate(
-    events.map((e) => ({
-      project: e.project,
-      sessionId: e.sessionId,
-      createdAt: e.prTimestamp,
-    })),
-    sessionMetas,
-  );
+  // Sort events deterministically: (project, prTimestamp, prUrl).
+  events.sort((a, b) => {
+    const p = a.project.localeCompare(b.project);
+    if (p !== 0) return p;
+    const t = a.prTimestamp.localeCompare(b.prTimestamp);
+    if (t !== 0) return t;
+    return a.prUrl.localeCompare(b.prUrl);
+  });
+
+  // ─── bySession ────────────────────────────────────────────────────────────
+  // Sort deterministically: (project, sessionId).
+  const bySession = windowResults
+    .map((wr) => wr.session)
+    .sort((a, b) => {
+      const p = a.project.localeCompare(b.project);
+      if (p !== 0) return p;
+      return a.sessionId.localeCompare(b.sessionId);
+    });
+
+  // ─── byProject ────────────────────────────────────────────────────────────
+  // Latency stats from aggregate().
+  const sessionMetas = sessionDataList.map((sd) => ({
+    project: sd.project,
+    sessionId: sd.sessionId,
+    startedAt: sd.sessionStart,
+  }));
+  const prAggEvents = events.map((e) => ({
+    project: e.project,
+    sessionId: e.sessionId,
+    createdAt: e.prTimestamp,
+  }));
+  const agg = aggregate(prAggEvents, sessionMetas);
+
+  // Token stats from aggregateTokensByProject().
+  const tokenStats = aggregateTokensByProject(windowResults);
+
+  // Merge: keys sorted lexicographically so JSON output is deterministic.
+  const allProjectKeys = new Set([
+    ...Object.keys(agg.byProject),
+    ...Object.keys(tokenStats),
+  ]);
+  const sortedProjectKeys = [...allProjectKeys].sort();
 
   const byProject: Record<string, PRProjectStats> = {};
-  for (const [project, stats] of Object.entries(agg.byProject)) {
-    byProject[project] = stats;
+  for (const project of sortedProjectKeys) {
+    const latency = agg.byProject[project];
+    const ts = tokenStats[project] ?? emptyTokenStats;
+
+    byProject[project] = {
+      prCount: latency?.prCount ?? 0,
+      sessionCount: latency?.sessionCount ?? 0,
+      sessionsWithNoPR: latency?.sessionsWithNoPR ?? 0,
+      medianMsToFirstPR: latency?.medianMsToFirstPR ?? null,
+      p90MsToFirstPR: latency?.p90MsToFirstPR ?? null,
+      productiveTokens: ts.productiveTokens,
+      dryTokens: ts.dryTokens,
+      overheadTokens: ts.overheadTokens,
+      sidechainTokens: ts.sidechainTokens,
+      totalTokens: ts.totalTokens,
+      dryTokenShare: ts.dryTokenShare,
+      tokensPerPR: ts.tokensPerPR,
+      prsPerMTok: ts.prsPerMTok,
+      cacheHitRatio: ts.cacheHitRatio,
+      outputShare: ts.outputShare,
+      estimatedCostUsd: ts.estimatedCostUsd,
+      ...(ts.pricingFlag !== undefined ? { pricingFlag: ts.pricingFlag } : {}),
+    };
   }
 
   return {
-    schema: "pr-stats/1",
+    schema: "pr-stats/2",
     generatedAt: new Date().toISOString(),
     events,
+    bySession,
     byProject,
   };
 }
