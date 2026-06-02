@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -45,15 +45,42 @@ export interface AnalyzePRStatsOpts {
   gitRootResolver?: (cwd: string) => Promise<string | null>;
 }
 
-async function defaultGitRootResolver(cwd: string): Promise<string | null> {
+/**
+ * Resolve a working directory to its canonical project root.
+ *
+ * For a linked git worktree (e.g. `.harness/worktrees/iter-N`,
+ * `.claude/worktrees/agent-…`), `git rev-parse --show-toplevel` returns the
+ * worktree's *own* top-level directory, not the main repo — so using it alone
+ * makes every worktree look like a separate project. `--git-common-dir`, by
+ * contrast, points at the *shared* `.git` directory of the main repo and is
+ * identical for the main worktree and all of its linked worktrees. Collapsing
+ * to the parent of that `.git` yields a single canonical root per repository.
+ *
+ * Falls back to `--show-toplevel` when the common dir is not a plain `.git`
+ * directory (bare repos, `--separate-git-dir`, submodules with a gitfile),
+ * where the parent-of-`.git` heuristic would be wrong.
+ */
+export async function defaultGitRootResolver(
+  cwd: string,
+): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(
       "git",
-      ["rev-parse", "--show-toplevel"],
+      [
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-common-dir",
+      ],
       { cwd },
     );
-    const trimmed = stdout.trim();
-    return trimmed || null;
+    const [topLevel = "", commonDir = ""] = stdout.trim().split("\n");
+    const trimmedCommon = commonDir.replace(/\/+$/, "");
+    if (/(^|\/)\.git$/.test(trimmedCommon)) {
+      return dirname(trimmedCommon);
+    }
+    const trimmedTop = topLevel.replace(/\/+$/, "");
+    return trimmedTop || null;
   } catch {
     return null;
   }
@@ -80,7 +107,8 @@ function formatMs(ms: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const remSeconds = seconds % 60;
-  if (minutes < 60) return remSeconds > 0 ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+  if (minutes < 60)
+    return remSeconds > 0 ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const remMinutes = minutes % 60;
   if (remMinutes === 0 && remSeconds === 0) return `${hours}h`;
@@ -157,10 +185,15 @@ export async function analyzePRStats(
     for (const entry of result.rawPrEntries) {
       const msToFirstPR = Math.max(
         0,
-        new Date(entry.timestamp).getTime() - new Date(result.sessionStart).getTime(),
+        new Date(entry.timestamp).getTime() -
+          new Date(result.sessionStart).getTime(),
       );
       const msSessionTotal = result.sessionEnd
-        ? Math.max(0, new Date(result.sessionEnd).getTime() - new Date(result.sessionStart).getTime())
+        ? Math.max(
+            0,
+            new Date(result.sessionEnd).getTime() -
+              new Date(result.sessionStart).getTime(),
+          )
         : 0;
 
       events.push({
@@ -197,10 +230,15 @@ export async function analyzePRStats(
     for (const entry of result.rawPrEntries) {
       const msToFirstPR = Math.max(
         0,
-        new Date(entry.timestamp).getTime() - new Date(result.sessionStart).getTime(),
+        new Date(entry.timestamp).getTime() -
+          new Date(result.sessionStart).getTime(),
       );
       const msSessionTotal = result.sessionEnd
-        ? Math.max(0, new Date(result.sessionEnd).getTime() - new Date(result.sessionStart).getTime())
+        ? Math.max(
+            0,
+            new Date(result.sessionEnd).getTime() -
+              new Date(result.sessionStart).getTime(),
+          )
         : 0;
 
       events.push({
