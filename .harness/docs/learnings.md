@@ -57,3 +57,22 @@ Reusable, non-obvious facts discovered during iterations — things a future age
 - `console.debug(...)` is an alias for `console.log` in Node.js — it writes to **stdout**, not stderr.
 - Any diagnostic/warning emitted via `console.debug` will contaminate `--json` output, making it invalid JSON that consumers can't `JSON.parse`.
 - Always use `console.error(...)` for warnings and diagnostics that must stay out of the machine-readable stdout stream.
+
+## 2026-06-02 — T0010: ccusage pricing adapter
+
+### `exactOptionalPropertyTypes: true` requires conditional spreads for optional fields
+
+- TypeScript with `exactOptionalPropertyTypes: true` disallows assigning `undefined` to optional properties (e.g. `pricingFlag: undefined` on `pricingFlag?: "a" | "b"`).
+- Use conditional spreads: `...(val !== undefined ? { pricingFlag: val } : {})` when populating optional fields from values that may be undefined.
+
+### Pricing adapter: keep IO and computation separate for testability
+
+- The memoized subprocess call (`loadPricingFn`) returns a **synchronous** `SyncPricingFn`, isolating the async subprocess from the pure aggregation functions.
+- Export `buildRateMap` and `makePricingFn` as pure functions so tests can feed synthetic fixture data without spawning a subprocess.
+- Pass the `SyncPricingFn` into `windowSession` / `aggregateTokensByProject` as an optional parameter — keeps the aggregator pure and testable without IO.
+
+### Multi-model windows: average-rate approximation
+
+- PR windows may contain events from multiple models (e.g. claude-opus + claude-haiku in the same window) but `TokenBreakdown` aggregates all tokens without per-model split.
+- Approach: call the pricing fn for each model with the full window's `totalTokens`, then average the USD results. Documents this as "blended-rate" via the pricing flag.
+- Single-model windows (common case) are exact; multi-model windows are an equal-split approximation — documented in code.
