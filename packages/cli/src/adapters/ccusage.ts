@@ -6,6 +6,22 @@ import { fileURLToPath } from "node:url";
 import { slim, type RawCcusage, type RawAgentDaily } from "../core/index.js";
 import type { UsageAdapter, CollectOpts } from "./types.js";
 
+// ─── Pricing types ────────────────────────────────────────────────────────────
+
+export interface PricingResult {
+  usd: number | null;
+  flag?: "unknown-model" | "blended-rate";
+}
+
+/**
+ * Synchronous pricing function returned by loadPricingFn().
+ * Accepts a model id and total token count; returns USD cost or null.
+ */
+export type SyncPricingFn = (
+  model: string,
+  totalTokens: number,
+) => PricingResult;
+
 export class CollectError extends Error {
   readonly stderr: string;
   readonly exitCode: number | null;
@@ -75,10 +91,7 @@ export function parseCollectOutput(
  * empty payload so the attribution lookup falls back to prefix inference
  * rather than blowing up the whole publish.
  */
-function parseAgentOutput(
-  stdout: string,
-  exitCode: number,
-): RawAgentDaily {
+function parseAgentOutput(stdout: string, exitCode: number): RawAgentDaily {
   if (exitCode !== 0 || stdout.trim() === "") return { daily: [] };
   try {
     return JSON.parse(stdout) as RawAgentDaily;
@@ -121,6 +134,96 @@ async function runCcusage(
   }
 }
 
+// ─── Pricing adapter ─────────────────────────────────────────────────────────
+
+interface DailyRow {
+  modelsUsed?: string[];
+  totalTokens: number;
+  totalCost: number;
+}
+
+/**
+ * Strip the trailing -YYYYMMDD date suffix from a model id so that
+ * "claude-opus-4-8-20260301" and "claude-opus-4-8" resolve to the same key.
+ */
+export function normalizeModelId(model: string): string {
+  return model.replace(/-\d{8}$/, "");
+}
+
+/**
+ * Build a model → effective $/token rate map from ccusage daily rows.
+ *
+ * For rows with a single model the rate is exact; for multi-model rows the
+ * row's blended rate (totalCost / totalTokens) is assigned to each model in
+ * that row. When a model appears in multiple rows the rates are combined as a
+ * weighted average. The "blended-rate" flag on pricing results documents this
+ * limitation to consumers.
+ *
+ * Exported for unit testing without spawning the subprocess.
+ */
+export function buildRateMap(rows: DailyRow[]): Map<string, number> {
+  const acc = new Map<string, { cost: number; tokens: number }>();
+  for (const row of rows) {
+    if (row.totalTokens <= 0) continue;
+    for (const model of row.modelsUsed ?? []) {
+      if (!model) continue;
+      const key = normalizeModelId(model);
+      const entry = acc.get(key);
+      if (entry) {
+        entry.cost += row.totalCost;
+        entry.tokens += row.totalTokens;
+      } else {
+        acc.set(key, { cost: row.totalCost, tokens: row.totalTokens });
+      }
+    }
+  }
+  const map = new Map<string, number>();
+  for (const [model, { cost, tokens }] of acc) {
+    if (tokens > 0) map.set(model, cost / tokens);
+  }
+  return map;
+}
+
+/** Create a synchronous pricing function from a pre-built rate map. */
+export function makePricingFn(rateMap: Map<string, number>): SyncPricingFn {
+  return (model: string, totalTokens: number): PricingResult => {
+    const key = normalizeModelId(model);
+    const rate = rateMap.get(key) ?? rateMap.get(model);
+    if (rate === undefined) return { usd: null, flag: "unknown-model" };
+    return { usd: rate * totalTokens, flag: "blended-rate" };
+  };
+}
+
+/**
+ * Load the pricing function once and memoize it for the process lifetime.
+ *
+ * Runs `ccusage daily --json` (all history) to derive effective per-model
+ * blended rates. Failures are non-fatal — an empty rate map is returned so
+ * callers get `null` cost with `unknown-model` flag rather than a crash.
+ */
+let pricingFnPromise: Promise<SyncPricingFn> | null = null;
+
+export function loadPricingFn(): Promise<SyncPricingFn> {
+  if (pricingFnPromise) return pricingFnPromise;
+  pricingFnPromise = (async (): Promise<SyncPricingFn> => {
+    try {
+      const { exitCode, stdout } = await runCcusage(
+        ["daily", "--json"],
+        COLLECT_TIMEOUT_MS,
+      );
+      if (exitCode !== 0 || stdout.trim() === "")
+        return makePricingFn(new Map());
+      const parsed = JSON.parse(stdout) as {
+        daily?: DailyRow[];
+      };
+      return makePricingFn(buildRateMap(parsed.daily ?? []));
+    } catch {
+      return makePricingFn(new Map());
+    }
+  })();
+  return pricingFnPromise;
+}
+
 /**
  * Subset of ccusage subcommands that map to a known harness agent id. The
  * unified `ccusage daily --json` tags each day's metadata.agents[] with
@@ -151,7 +254,10 @@ export const ccusageAdapter: UsageAdapter<RawCcusage> = {
 
   async available(): Promise<boolean> {
     try {
-      const { exitCode } = await runCcusage(["--version"], AVAILABLE_TIMEOUT_MS);
+      const { exitCode } = await runCcusage(
+        ["--version"],
+        AVAILABLE_TIMEOUT_MS,
+      );
       return exitCode === 0;
     } catch {
       return false;
