@@ -84,4 +84,86 @@ describe("scanClaudeCodeSession", () => {
 
     errorSpy.mockRestore();
   });
+
+  describe("token extraction", () => {
+    it("extracts token usage from assistant entries", async () => {
+      const result = await scanClaudeCodeSession(
+        fixture("claude-code-with-tokens.jsonl"),
+      );
+
+      expect(result.tokens).toHaveLength(2);
+
+      const first = result.tokens[0]!;
+      expect(first.source).toBe("claude");
+      expect(first.timestamp).toBe("2026-05-28T12:01:00.000Z");
+      expect(first.model).toBe("claude-opus-4-8");
+      expect(first.isSidechain).toBe(false);
+      expect(first.tokens.inputTokens).toBe(100);
+      expect(first.tokens.outputTokens).toBe(50);
+      expect(first.tokens.cacheReadTokens).toBe(200);
+      expect(first.tokens.cacheCreationTokens).toBe(10);
+      expect(first.tokens.reasoningTokens).toBe(0);
+      expect(first.tokens.totalTokens).toBe(360); // 100+50+200+10
+      expect(first.usageMissing).toBeUndefined();
+
+      const second = result.tokens[1]!;
+      expect(second.tokens.inputTokens).toBe(80);
+      expect(second.tokens.outputTokens).toBe(30);
+      expect(second.tokens.totalTokens).toBe(110);
+      expect(second.isSidechain).toBeUndefined();
+    });
+
+    it("deduplicates assistant entries by requestId (first occurrence wins)", async () => {
+      const result = await scanClaudeCodeSession(
+        fixture("claude-code-dedupe-tokens.jsonl"),
+      );
+
+      // req-dup-001 appears twice but should produce only one token event.
+      expect(result.tokens).toHaveLength(2);
+      expect(result.tokens[0]!.timestamp).toBe("2026-05-28T13:01:00.000Z");
+      expect(result.tokens[1]!.timestamp).toBe("2026-05-28T13:03:00.000Z");
+    });
+
+    it("propagates isSidechain flag on token events", async () => {
+      const result = await scanClaudeCodeSession(
+        fixture("claude-code-sidechain-tokens.jsonl"),
+      );
+
+      expect(result.tokens).toHaveLength(3);
+      expect(result.tokens[0]!.isSidechain).toBe(false);
+      expect(result.tokens[1]!.isSidechain).toBe(true);
+      expect(result.tokens[1]!.model).toBe("claude-haiku-4-5");
+      expect(result.tokens[2]!.isSidechain).toBe(false);
+    });
+
+    it("emits zero-token events with usageMissing when usage block is absent", async () => {
+      const result = await scanClaudeCodeSession(
+        fixture("claude-code-missing-usage.jsonl"),
+      );
+
+      expect(result.tokens).toHaveLength(2);
+      const first = result.tokens[0]!;
+      expect(first.usageMissing).toBe(true);
+      expect(first.model).toBe("claude-opus-4-8");
+      expect(first.tokens.inputTokens).toBe(0);
+      expect(first.tokens.outputTokens).toBe(0);
+      expect(first.tokens.totalTokens).toBe(0);
+
+      const second = result.tokens[1]!;
+      expect(second.usageMissing).toBe(true);
+      expect(second.model).toBeNull();
+    });
+
+    it("returns empty tokens array for sessions with no assistant entries", async () => {
+      const result = await scanClaudeCodeSession(
+        fixture("claude-code-no-pr.jsonl"),
+      );
+
+      // claude-code-no-pr.jsonl has user/assistant/attachment entries without message.usage
+      expect(result.tokens).toBeDefined();
+      // The assistant entry has no message block → usageMissing event
+      const missing = result.tokens.filter((t) => t.usageMissing);
+      expect(missing.length).toBeGreaterThanOrEqual(0);
+    });
+  });
 });

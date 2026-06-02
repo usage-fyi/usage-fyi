@@ -1,6 +1,9 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { basename } from "node:path";
+import { type TokenEvent, type TokenBreakdown, zeroBreakdown } from "./tokenTypes.js";
+
+export type { TokenEvent, TokenBreakdown };
 
 export interface ClaudeSessionResult {
   filePath: string;
@@ -15,16 +18,19 @@ export interface ClaudeSessionResult {
     timestamp: string;
     sessionId: string;
   }>;
+  tokens: TokenEvent[];
 }
 
 /**
  * Stream a Claude Code JSONL session file line-by-line and extract
- * session metadata plus PR-link events.
+ * session metadata, PR-link events, and per-message token usage.
  *
  * - sessionStart / sessionEnd: running min / max of entry.timestamp.
  * - cwd: first non-null entry.cwd encountered.
  * - sessionId: from the first pr-link entry, or the file basename.
  * - rawPrEntries: deduplicated by prUrl within the session.
+ * - tokens: one TokenEvent per assistant message, deduped by requestId.
+ *   Missing usage blocks produce a zero-token event with usageMissing: true.
  *
  * Malformed JSON lines are skipped silently.
  */
@@ -41,6 +47,10 @@ export async function scanClaudeCodeSession(
 
   const seenPrUrls = new Set<string>();
   const rawPrEntries: ClaudeSessionResult["rawPrEntries"] = [];
+
+  // requestId dedup is per-session; requestIds repeat across sessions.
+  const seenRequestIds = new Set<string>();
+  const tokens: TokenEvent[] = [];
 
   let timestampCount = 0;
   let totalLines = 0;
@@ -109,6 +119,87 @@ export async function scanClaudeCodeSession(
         }
       }
     }
+
+    if (record.type === "assistant") {
+      const timestamp =
+        typeof record.timestamp === "string" ? record.timestamp : undefined;
+      if (timestamp === undefined) continue;
+
+      // Deduplicate by requestId (first occurrence wins).
+      const requestId =
+        typeof record.requestId === "string" ? record.requestId : undefined;
+      if (requestId !== undefined) {
+        if (seenRequestIds.has(requestId)) continue;
+        seenRequestIds.add(requestId);
+      }
+
+      const isSidechain =
+        typeof record.isSidechain === "boolean"
+          ? record.isSidechain
+          : undefined;
+
+      const message =
+        typeof record.message === "object" && record.message !== null
+          ? (record.message as Record<string, unknown>)
+          : undefined;
+
+      const model =
+        message !== undefined && typeof message.model === "string"
+          ? message.model
+          : null;
+
+      const usage =
+        message !== undefined &&
+        typeof message.usage === "object" &&
+        message.usage !== null
+          ? (message.usage as Record<string, unknown>)
+          : undefined;
+
+      if (usage === undefined) {
+        const event: TokenEvent = {
+          timestamp,
+          model,
+          tokens: zeroBreakdown(),
+          source: "claude",
+          usageMissing: true,
+        };
+        if (isSidechain !== undefined) event.isSidechain = isSidechain;
+        tokens.push(event);
+        continue;
+      }
+
+      const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+      const outputTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+      const cacheReadTokens =
+        typeof usage.cache_read_input_tokens === "number"
+          ? usage.cache_read_input_tokens
+          : 0;
+      const cacheCreationTokens =
+        typeof usage.cache_creation_input_tokens === "number"
+          ? usage.cache_creation_input_tokens
+          : 0;
+      const reasoningTokens = 0;
+      const totalTokens =
+        inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+
+      const breakdown: TokenBreakdown = {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        reasoningTokens,
+        totalTokens,
+      };
+
+      const event: TokenEvent = {
+        timestamp,
+        model,
+        tokens: breakdown,
+        source: "claude",
+      };
+      if (isSidechain !== undefined) event.isSidechain = isSidechain;
+      tokens.push(event);
+    }
   }
 
   if (totalLines > 0 && timestampCount / totalLines < 0.5) {
@@ -134,5 +225,6 @@ export async function scanClaudeCodeSession(
     sessionStart,
     sessionEnd,
     rawPrEntries,
+    tokens,
   };
 }
