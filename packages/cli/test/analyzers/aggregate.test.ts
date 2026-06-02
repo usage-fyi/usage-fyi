@@ -205,8 +205,8 @@ describe("aggregate() — earliest PR per session", () => {
 });
 
 describe("aggregate() — negative msToFirstPR clamping", () => {
-  it("clamps negative msToFirstPR to 0 and logs a debug message", () => {
-    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+  it("clamps negative msToFirstPR to 0 and logs a diagnostic to stderr", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = aggregate(
       [event("p", "s1", "2026-05-31T23:00:00Z")],
@@ -216,12 +216,12 @@ describe("aggregate() — negative msToFirstPR clamping", () => {
     const stats = result.byProject["p"]!;
     expect(stats.medianMsToFirstPR).toBe(0);
     expect(stats.p90MsToFirstPR).toBe(0);
-    expect(debugSpy).toHaveBeenCalledOnce();
-    expect(debugSpy).toHaveBeenCalledWith(
+    expect(errorSpy).toHaveBeenCalledOnce();
+    expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("Negative msToFirstPR"),
     );
 
-    debugSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 });
 

@@ -144,7 +144,7 @@ export function aggregate(
       let ms = earliest - startedAt;
       if (ms < 0) {
         // eslint-disable-next-line no-console
-        console.debug(
+        console.error(
           `Negative msToFirstPR (${ms}ms) for session ${session.sessionId} in project ${project}; clamping to 0.`,
         );
         ms = 0;

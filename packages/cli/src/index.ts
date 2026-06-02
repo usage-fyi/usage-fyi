@@ -47,7 +47,13 @@ export async function run(argv: string[]): Promise<number> {
   }
 
   if (parsed.command === "pr-stats") {
-    return runPrStats({ json: parsed.json });
+    return runPrStats({
+      json: parsed.json,
+      by: parsed.by,
+      ...(parsed.pr !== null ? { pr: parsed.pr } : {}),
+      ...(parsed.since !== null ? { since: parsed.since } : {}),
+      ...(parsed.project !== null ? { project: parsed.project } : {}),
+    });
   }
 
   const config = await loadConfig();

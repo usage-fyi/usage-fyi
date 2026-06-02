@@ -8,6 +8,11 @@ export interface ParsedArgs {
   json: boolean;
   open: boolean;
   preview: boolean;
+  // pr-stats flags:
+  by: "event" | "session";
+  pr: string | null;
+  since: string | null;
+  project: string | null;
 }
 
 export class LaterPhaseError extends Error {
@@ -63,8 +68,12 @@ usage-fyi pr-stats — per-project PR creation stats from local session files
   bunx usage-fyi pr-stats
 
 Options:
-  --json             Output raw JSON report
-  --help             Print this help
+  --by <event|session>   Group output by event (default) or session
+  --pr <url|number>      Filter to a single PR by full URL, number, or #number
+  --since <date>         Filter to events on or after this date (ISO or yyyy-mm-dd)
+  --project <path>       Filter to events in this project directory
+  --json                 Output raw JSON report
+  --help                 Print this help
 `;
 
 function nextValue(argv: string[], i: number, flag: string): string {
@@ -82,6 +91,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     open: true,
     preview: false,
+    by: "event",
+    pr: null,
+    since: null,
+    project: null,
   };
 
   let i = 0;
@@ -122,6 +135,34 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case "--source": {
         if (args.command === "pr-stats") throw new Error("Unknown flag: --source");
         args.source = nextValue(argv, i, "source");
+        i++;
+        break;
+      }
+      case "--by": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --by");
+        const val = nextValue(argv, i, "by");
+        if (val !== "event" && val !== "session") {
+          throw new Error(`--by must be "event" or "session", got: ${val}`);
+        }
+        args.by = val;
+        i++;
+        break;
+      }
+      case "--pr": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --pr");
+        args.pr = nextValue(argv, i, "pr");
+        i++;
+        break;
+      }
+      case "--since": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --since");
+        args.since = nextValue(argv, i, "since");
+        i++;
+        break;
+      }
+      case "--project": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --project");
+        args.project = nextValue(argv, i, "project");
         i++;
         break;
       }

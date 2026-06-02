@@ -12,6 +12,7 @@ import {
   aggregateTokensByProject,
   type SessionStats,
   type ProjectTokenStats,
+  type WindowSessionResult,
 } from "./aggregate.js";
 import { type TokenBreakdown, zeroBreakdown } from "./sources/tokenTypes.js";
 import { loadPricingFn } from "../adapters/ccusage.js";
@@ -79,6 +80,14 @@ export interface AnalyzePRStatsOpts {
   claudeProjectsDir?: string; // default: ~/.claude/projects
   codexSessionsDir?: string; // default: ~/.codex/sessions
   gitRootResolver?: (cwd: string) => Promise<string | null>;
+  since?: string; // ISO or yyyy-mm-dd — filter events to prTimestamp >= since
+  project?: string; // canonical project path — filter to this project
+  pr?: string; // PR URL, "#N", or "N" — filter to a single PR
+}
+
+export interface FormatTableOpts {
+  by?: "event" | "session";
+  pr?: string | null;
 }
 
 /**
@@ -152,36 +161,161 @@ function formatMs(ms: number): string {
   return `${hours}h ${remMinutes}m ${remSeconds}s`;
 }
 
-/** Build a human-readable table from a PRStatsReport. */
-export function formatPRStatsTable(report: PRStatsReport): string {
-  const projects = Object.entries(report.byProject);
-  if (projects.length === 0) {
-    return "No PR stats found.";
-  }
+function fmtTokens(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
+}
 
-  projects.sort(([a], [b]) => a.localeCompare(b));
+function fmtCost(usd: number | null): string {
+  if (usd === null) return "—";
+  return `$${usd.toFixed(2)}`;
+}
 
-  const headers = ["Project", "PRs", "Median TTP", "P90 TTP"];
-  const rows = projects.map(([project, stats]) => [
-    project,
-    String(stats.prCount),
-    stats.medianMsToFirstPR === null ? "-" : formatMs(stats.medianMsToFirstPR),
-    stats.p90MsToFirstPR === null ? "-" : formatMs(stats.p90MsToFirstPR),
-  ]);
+function fmtPercent(ratio: number): string {
+  return `${(ratio * 100).toFixed(1)}%`;
+}
 
+function buildTable(headers: string[], rows: string[][]): string {
   const colWidths = headers.map((h, i) =>
-    Math.max(h.length, ...rows.map((r) => r[i]!.length)),
+    Math.max(h.length, ...rows.map((r) => (r[i] ?? "").length)),
   );
-
   const formatRow = (cells: string[]) =>
-    cells.map((c, i) => c.padEnd(colWidths[i]! + 2)).join("");
-
+    cells.map((c, i) => c.padEnd(colWidths[i]! + 2)).join("").trimEnd();
   const lines: string[] = [];
   lines.push(formatRow(headers));
   lines.push(formatRow(headers.map((h) => "-".repeat(h.length))));
   for (const row of rows) lines.push(formatRow(row));
-
   return lines.join("\n");
+}
+
+function formatByProject(report: PRStatsReport): string {
+  const projects = Object.entries(report.byProject);
+  if (projects.length === 0) return "No PR stats found.";
+
+  projects.sort(([a], [b]) => a.localeCompare(b));
+
+  // Collect unique models per project from events
+  const modelsByProject = new Map<string, Set<string>>();
+  for (const event of report.events) {
+    if (!modelsByProject.has(event.project)) {
+      modelsByProject.set(event.project, new Set());
+    }
+    for (const m of event.models) {
+      modelsByProject.get(event.project)!.add(m);
+    }
+  }
+
+  const headers = [
+    "Project",
+    "PRs",
+    "Median TTP",
+    "P90 TTP",
+    "Tokens",
+    "Cost",
+    "Model(s)",
+    "Dry%",
+  ];
+  const rows = projects.map(([project, stats]) => [
+    project,
+    String(stats.prCount),
+    stats.medianMsToFirstPR === null
+      ? "—"
+      : formatMs(stats.medianMsToFirstPR),
+    stats.p90MsToFirstPR === null ? "—" : formatMs(stats.p90MsToFirstPR),
+    fmtTokens(stats.totalTokens.totalTokens),
+    fmtCost(stats.estimatedCostUsd),
+    [...(modelsByProject.get(project) ?? [])].sort().join(", ") || "—",
+    fmtPercent(stats.dryTokenShare),
+  ]);
+
+  return buildTable(headers, rows);
+}
+
+function formatBySession(report: PRStatsReport): string {
+  if (report.bySession.length === 0) return "No sessions found.";
+
+  const sessions = [...report.bySession].sort((a, b) => {
+    const p = a.project.localeCompare(b.project);
+    if (p !== 0) return p;
+    return a.sessionId.localeCompare(b.sessionId);
+  });
+
+  const headers = ["Project", "Session", "Duration", "PRs", "Tokens", "Cost"];
+  const rows = sessions.map((s) => [
+    s.project,
+    s.sessionId.slice(0, 16),
+    formatMs(s.durationMs),
+    String(s.prCount),
+    fmtTokens(s.tokens.totalTokens),
+    fmtCost(s.estimatedCostUsd),
+  ]);
+
+  return buildTable(headers, rows);
+}
+
+function formatPRDetail(report: PRStatsReport): string {
+  if (report.events.length === 0) return "No PR found matching filter.";
+
+  const event = report.events[0]!;
+  const t = event.tokens;
+  const cacheHit =
+    t.inputTokens + t.cacheReadTokens > 0
+      ? t.cacheReadTokens / (t.inputTokens + t.cacheReadTokens)
+      : null;
+
+  return [
+    `PR:              ${event.prUrl}`,
+    `Project:         ${event.project}`,
+    "",
+    "Tokens",
+    `  Input:         ${fmtTokens(t.inputTokens)}`,
+    `  Output:        ${fmtTokens(t.outputTokens)}`,
+    `  Cache read:    ${fmtTokens(t.cacheReadTokens)}`,
+    `  Cache write:   ${fmtTokens(t.cacheCreationTokens)}`,
+    `  Total:         ${fmtTokens(t.totalTokens)}`,
+    "",
+    "Performance",
+    `  Time to PR:    ${formatMs(event.msToFirstPR)}`,
+    `  Since prev PR: ${event.msFromPrevPR === null ? "—" : formatMs(event.msFromPrevPR)}`,
+    `  Cache hit:     ${cacheHit === null ? "—" : fmtPercent(cacheHit)}`,
+    `  Cost:          ${fmtCost(event.estimatedCostUsd)}`,
+    "",
+    `Models:          ${event.models.join(", ") || "—"}`,
+  ].join("\n");
+}
+
+/** Build a human-readable table from a PRStatsReport. */
+export function formatPRStatsTable(
+  report: PRStatsReport,
+  opts: FormatTableOpts = {},
+): string {
+  if (opts.pr != null) {
+    return formatPRDetail(report);
+  }
+  if (opts.by === "session") {
+    return formatBySession(report);
+  }
+  return formatByProject(report);
+}
+
+// ─── PR filter matcher ────────────────────────────────────────────────────────
+
+function buildPrMatcher(pr: string): (event: PREvent) => boolean {
+  if (pr.startsWith("http://") || pr.startsWith("https://")) {
+    return (e) => e.prUrl === pr;
+  }
+  const numMatch = /^#?(\d+)$/.exec(pr);
+  if (numMatch) {
+    const num = parseInt(numMatch[1]!, 10);
+    return (e) => e.prNumber === num;
+  }
+  // Try last path segment (e.g. partial URL)
+  const segments = pr.split("/").filter(Boolean);
+  const lastSeg = segments[segments.length - 1];
+  const segNum = lastSeg ? parseInt(lastSeg, 10) : NaN;
+  if (!isNaN(segNum)) {
+    return (e) => e.prNumber === segNum;
+  }
+  return (e) => e.prUrl === pr;
 }
 
 interface SessionData {
@@ -222,6 +356,9 @@ const emptyTokenStats: ProjectTokenStats = {
  * - `events` sorted by (project, prTimestamp, prUrl).
  * - `bySession` sorted by (project, sessionId).
  * - `byProject` keys sorted lexicographically (insertion order = sort order).
+ *
+ * Filtering (opts.since / opts.project / opts.pr) is applied after building all
+ * events so byProject reflects only the scoped window.
  */
 export async function analyzePRStats(
   opts: AnalyzePRStatsOpts = {},
@@ -274,7 +411,7 @@ export async function analyzePRStats(
   }
 
   // ─── Window sessions ──────────────────────────────────────────────────────
-  const windowResults = sessionDataList.map((sd) =>
+  const windowResults: WindowSessionResult[] = sessionDataList.map((sd) =>
     windowSession({
       sessionId: sd.sessionId,
       project: sd.project,
@@ -289,14 +426,22 @@ export async function analyzePRStats(
     }),
   );
 
-  // ─── Build events ─────────────────────────────────────────────────────────
-  const events: PREvent[] = [];
+  // ─── Apply project filter (session-level) ─────────────────────────────────
+  let activeIndices = sessionDataList.map((_, i) => i);
+  if (opts.project) {
+    const projectFilter = opts.project;
+    activeIndices = activeIndices.filter(
+      (i) => sessionDataList[i]!.project === projectFilter,
+    );
+  }
 
-  for (let i = 0; i < sessionDataList.length; i++) {
-    const sd = sessionDataList[i]!;
-    const wr = windowResults[i]!;
+  // ─── Build events from active sessions ────────────────────────────────────
+  let events: PREvent[] = [];
 
-    // Index window results by prUrl for O(1) lookup.
+  for (const idx of activeIndices) {
+    const sd = sessionDataList[idx]!;
+    const wr = windowResults[idx]!;
+
     const windowByPrUrl = new Map(wr.perPR.map((pr) => [pr.prUrl, pr]));
 
     for (const entry of sd.rawPrEntries) {
@@ -335,6 +480,42 @@ export async function analyzePRStats(
     }
   }
 
+  // ─── Apply since filter ───────────────────────────────────────────────────
+  if (opts.since) {
+    const sinceMs = new Date(opts.since).getTime();
+    if (!isNaN(sinceMs)) {
+      events = events.filter(
+        (e) => new Date(e.prTimestamp).getTime() >= sinceMs,
+      );
+      const sessionIdsWithEvent = new Set(events.map((e) => e.sessionId));
+      activeIndices = activeIndices.filter((i) => {
+        const sd = sessionDataList[i]!;
+        const wr = windowResults[i]!;
+        return (
+          sessionIdsWithEvent.has(sd.sessionId) ||
+          (wr.isDrySession &&
+            new Date(sd.sessionStart).getTime() >= sinceMs)
+        );
+      });
+    }
+  }
+
+  // ─── Apply PR filter ──────────────────────────────────────────────────────
+  if (opts.pr != null) {
+    const matcher = buildPrMatcher(opts.pr);
+    events = events.filter((e) => matcher(e));
+    const projectsSet = new Set(events.map((e) => e.project));
+    if (projectsSet.size > 1 && !opts.project) {
+      throw new Error(
+        `--pr "${opts.pr}" matches PRs in multiple projects: ${[...projectsSet].join(", ")}. Use --project to specify one.`,
+      );
+    }
+    const sessionIdsWithEvent = new Set(events.map((e) => e.sessionId));
+    activeIndices = activeIndices.filter((i) =>
+      sessionIdsWithEvent.has(sessionDataList[i]!.sessionId),
+    );
+  }
+
   // Sort events deterministically: (project, prTimestamp, prUrl).
   events.sort((a, b) => {
     const p = a.project.localeCompare(b.project);
@@ -344,9 +525,11 @@ export async function analyzePRStats(
     return a.prUrl.localeCompare(b.prUrl);
   });
 
+  const activeWindowResults = activeIndices.map((i) => windowResults[i]!);
+  const activeSessionData = activeIndices.map((i) => sessionDataList[i]!);
+
   // ─── bySession ────────────────────────────────────────────────────────────
-  // Sort deterministically: (project, sessionId).
-  const bySession = windowResults
+  const bySession = activeWindowResults
     .map((wr) => wr.session)
     .sort((a, b) => {
       const p = a.project.localeCompare(b.project);
@@ -355,8 +538,7 @@ export async function analyzePRStats(
     });
 
   // ─── byProject ────────────────────────────────────────────────────────────
-  // Latency stats from aggregate().
-  const sessionMetas = sessionDataList.map((sd) => ({
+  const sessionMetas = activeSessionData.map((sd) => ({
     project: sd.project,
     sessionId: sd.sessionId,
     startedAt: sd.sessionStart,
@@ -368,10 +550,8 @@ export async function analyzePRStats(
   }));
   const agg = aggregate(prAggEvents, sessionMetas);
 
-  // Token stats from aggregateTokensByProject().
-  const tokenStats = aggregateTokensByProject(windowResults);
+  const tokenStats = aggregateTokensByProject(activeWindowResults);
 
-  // Merge: keys sorted lexicographically so JSON output is deterministic.
   const allProjectKeys = new Set([
     ...Object.keys(agg.byProject),
     ...Object.keys(tokenStats),
