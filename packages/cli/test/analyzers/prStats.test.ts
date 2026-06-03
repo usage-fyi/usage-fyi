@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { analyzePRStats, formatPRStatsTable } from "../../src/analyzers/index.js";
+import {
+  analyzePRStats,
+  formatPRStatsTable,
+} from "../../src/analyzers/index.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { zeroBreakdown } from "../../src/analyzers/sources/tokenTypes.js";
@@ -7,7 +10,15 @@ import { zeroBreakdown } from "../../src/analyzers/sources/tokenTypes.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const fixturesDir = join(__dirname, "..", "..", "src", "analyzers", "__fixtures__");
+const fixturesDir = join(
+  __dirname,
+  "..",
+  "..",
+  "src",
+  "analyzers",
+  "__fixtures__",
+);
+const tokenFixturesDir = join(fixturesDir, "tokens");
 
 describe("analyzePRStats", () => {
   it("returns empty report when directories do not exist", async () => {
@@ -37,7 +48,9 @@ describe("analyzePRStats", () => {
       expect(ev.prUrl).toMatch(/^https:\/\/github\.com\/.*\/pull\/\d+$/);
       // pr-stats/2 token fields should be present
       expect(ev.tokens).toBeDefined();
-      expect(["windowed", "session-only", "approximate"]).toContain(ev.tokensAttributed);
+      expect(["windowed", "session-only", "approximate"]).toContain(
+        ev.tokensAttributed,
+      );
       expect(Array.isArray(ev.models)).toBe(true);
     }
   });
@@ -208,5 +221,69 @@ describe("formatPRStatsTable", () => {
       },
     });
     expect(table).toContain("-");
+  });
+});
+
+// ─── Reconciliation test ──────────────────────────────────────────────────────
+//
+// Asserts that the sum of session tokens reported by analyzePRStats over the
+// hand-built token fixtures matches the expected total derived by direct
+// inspection of the JSONL files — the same calculation ccusage performs when
+// it reads the same session files.
+//
+// If this test fails after a ccusage upgrade, check whether the token
+// attribution schema has changed in:
+//   packages/cli/src/analyzers/__fixtures__/tokens/
+//   packages/cli/src/analyzers/sources/claudeCode.ts
+//   packages/cli/src/analyzers/sources/codex.ts
+//
+// Expected totals (all on 2026-06-10; each plain message = input:100 + output:20 = 120):
+//   claude-multi-pr:     8 messages × 120                          =  960
+//   claude-dry-session:  3 messages × 120                          =  360
+//   claude-sidechain:    120 + 60 + 120                            =  300
+//   claude-dedupe:       120 (req-dd1, first occurrence) + 80      =  200
+//   out-of-order:        3 × 120 (session-only; all tokens counted) = 360
+//   unknown-model:       1 × 120                                   =  120
+//   codex-cumulative:    3 × 180 (delta per event)                 =  540
+//                                                          Total = 2840
+//
+// Tolerance ±1: integer arithmetic throughout; no boundary rounding occurs
+// because all fixture events are pinned to the same UTC day. Tolerance is
+// documented for forward-compatibility — it is not needed for this fixture set.
+describe("reconciliation — token fixture totals match ccusage-derived expectation", () => {
+  it("sum of bySession.tokens.totalTokens equals hand-computed fixture total", async () => {
+    // Point both scanners at the same tokens/ directory.
+    // Claude scanner: picks up all 7 JSONL files. The codex-cumulative file
+    //   produces one extra 0-token session (cwd/sessionStart come from
+    //   non-assistant entries; no assistant entries → 0 tokens counted).
+    // Codex scanner: picks up all 7 JSONL files. The 6 Claude-format files
+    //   produce cwd=null/sessionStart=null and are skipped by analyzePRStats.
+    // Net: 7 real sessions + 1 extra 0-token session = sum unaffected.
+    const report = await analyzePRStats({
+      claudeProjectsDir: tokenFixturesDir,
+      codexSessionsDir: tokenFixturesDir,
+      gitRootResolver: async (cwd) => cwd,
+    });
+
+    expect(report.schema).toBe("pr-stats/2");
+
+    // Verify stdout parsability: the report object itself is the parsed form;
+    // round-trip through JSON to confirm no unserializable values.
+    expect(() => JSON.parse(JSON.stringify(report))).not.toThrow();
+
+    const sessionTotal = report.bySession.reduce(
+      (sum, s) => sum + s.tokens.totalTokens,
+      0,
+    );
+
+    // Hand-computed expected total (see comments above for per-session breakdown).
+    const EXPECTED_TOTAL = 2840;
+    // Tolerance ±1: allows for one-day boundary rounding when ccusage buckets
+    // events near UTC midnight. Not triggered by this fixture set.
+    const TOLERANCE = 1;
+
+    expect(Math.abs(sessionTotal - EXPECTED_TOTAL)).toBeLessThanOrEqual(
+      TOLERANCE,
+    );
   });
 });

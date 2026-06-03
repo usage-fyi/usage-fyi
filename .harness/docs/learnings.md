@@ -76,3 +76,24 @@ Reusable, non-obvious facts discovered during iterations — things a future age
 - PR windows may contain events from multiple models (e.g. claude-opus + claude-haiku in the same window) but `TokenBreakdown` aggregates all tokens without per-model split.
 - Approach: call the pricing fn for each model with the full window's `totalTokens`, then average the USD results. Documents this as "blended-rate" via the pricing flag.
 - Single-model windows (common case) are exact; multi-model windows are an equal-split approximation — documented in code.
+
+## 2026-06-03 — T0013: Hand-built fixtures plus ccusage reconciliation test
+
+### Fixture-based testing with dual-scanner directories
+
+- `analyzePRStats` accepts `claudeProjectsDir` and `codexSessionsDir`. When both point to the same directory, ALL JSONL files are scanned by BOTH scanners.
+- Codex-format files scanned by the Claude scanner: `session_meta` sets `cwd` and timestamps come from `event_msg`/`response_item` entries (because the Claude scanner processes ALL lines' timestamps). This produces a valid-but-0-token session that passes the `cwd && sessionStart` guard.
+- Claude-format files scanned by the Codex scanner: no `session_meta` → `cwd=null` → skipped by `analyzePRStats`. Safe.
+- Net effect: pointing both scanners at the same fixture directory adds one extra 0-token session per codex-format file. Token totals are unaffected.
+
+### `windowSession` session-only trigger requires null `tsMs`
+
+- The post-sort monotonicity check (`sortedTokens[i].tsMs < sortedTokens[i-1].tsMs`) is unreachable in practice after a valid numeric sort.
+- The only reliable way to trigger `session-only` attribution in fixtures is an unparseable timestamp string (e.g., `"2026-13-10T..."` with invalid month 13). `parseTs` returns `null` for non-finite `getTime()` results, which then triggers the `tokensWithMs.some(t => t.tsMs === null)` guard.
+- Corrupt timestamps are counted in `sessionBreakdown` (computed before the guard check), so `session.tokens.totalTokens` still reflects the full session spend even in session-only mode.
+
+### String comparison for sessionStart/sessionEnd in Claude scanner
+
+- The Claude scanner uses lexicographic string comparison (`record.timestamp < sessionStart`) to track min/max timestamps. ISO 8601 sorts lexicographically, so this is correct for valid dates.
+- Pathological timestamps (e.g., `"INVALID"`, `"2026-13-..."`) may "win" the comparison if their leading characters sort after `'2'` (ASCII 50). This can cause `sessionEnd` to be set to an invalid string.
+- In `windowSession`, `parseTs(sessionEnd)` returns `null` → `endMs=null` → `durationMs=0`. No crash, but `durationMs` is 0 and `tokensPerActiveMinute` is null for affected sessions.
