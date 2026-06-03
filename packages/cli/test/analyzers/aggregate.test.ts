@@ -2,6 +2,8 @@
  * Unit tests for aggregate(), windowSession(), and aggregateTokensByProject().
  */
 import { describe, it, expect, vi } from "vitest";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   aggregate,
   windowSession,
@@ -12,6 +14,20 @@ import {
   type WindowSessionResult,
 } from "../../src/analyzers/index.js";
 import { type TokenEvent } from "../../src/analyzers/sources/tokenTypes.js";
+import { scanClaudeCodeSession } from "../../src/analyzers/sources/claudeCode.js";
+import { scanCodexSession } from "../../src/analyzers/sources/codex.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const tokenFixturesDir = join(
+  __dirname,
+  "..",
+  "..",
+  "src",
+  "analyzers",
+  "__fixtures__",
+  "tokens",
+);
 
 function event(
   project: string,
@@ -1108,5 +1124,248 @@ describe("aggregateTokensByProject() — pricing", () => {
     const stats = aggregateTokensByProject([r])["org/repo"]!;
     expect(stats.estimatedCostUsd).toBeNull();
     expect(stats.pricingFlag).toBeUndefined();
+  });
+});
+
+// ─── Hand-built fixture tests ────────────────────────────────────────────────
+//
+// Each test loads a JSONL fixture from __fixtures__/tokens/, scans it with the
+// real scanner, then feeds the result into windowSession(). Expected token
+// totals are computed by hand from the fixture file contents — the comments
+// document the arithmetic so a reviewer can re-derive the numbers without
+// running the tests.
+
+/** Minimal pricing fn: returns cost for known models, unknown-model for others. */
+function fixturePricingFn(
+  model: string,
+  totalTokens: number,
+): { usd: number | null; flag?: "unknown-model" | "blended-rate" } {
+  const knownModels = new Set([
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-opus-4-8",
+  ]);
+  if (knownModels.has(model))
+    return { usd: 0.001 * totalTokens, flag: "blended-rate" };
+  return { usd: null, flag: "unknown-model" };
+}
+
+function toWindowInput(
+  result: Awaited<ReturnType<typeof scanClaudeCodeSession>>,
+  project = "fixture/repo",
+): Parameters<typeof windowSession>[0] {
+  return {
+    sessionId: result.sessionId ?? "unknown",
+    project,
+    sessionStart: result.sessionStart ?? "2026-06-10T00:00:00.000Z",
+    sessionEnd: result.sessionEnd,
+    prs: result.rawPrEntries.map((p) => ({
+      prUrl: p.prUrl,
+      prTimestamp: p.timestamp,
+    })),
+    tokens: result.tokens,
+  };
+}
+
+describe("fixture: claude-multi-pr — multi-PR windowing", () => {
+  // Fixture layout (all 2026-06-10, each message = input:100 + output:20 = 120 tokens):
+  //   T+05..T+15: msgs 1-3  → window 1 for PR#100 (T+30) = 3×120 = 360
+  //   T+35..T+45: msgs 4-6  → window 2 for PR#101 (T+90) = 3×120 = 360
+  //   T+95..T+100: msgs 7-8 → overhead                   = 2×120 = 240
+  //   Session total = 960
+  it("produces two PR windows plus overhead", async () => {
+    const result = await scanClaudeCodeSession(
+      join(tokenFixturesDir, "claude-multi-pr.jsonl"),
+    );
+
+    expect(result.rawPrEntries).toHaveLength(2);
+    expect(result.tokens).toHaveLength(8);
+
+    const wr = windowSession(toWindowInput(result));
+
+    expect(wr.isDrySession).toBe(false);
+    expect(wr.session.tokensAttributed).toBe("windowed");
+    expect(wr.perPR).toHaveLength(2);
+    // Window 1: msgs 1-3 (3 × 120 = 360)
+    expect(wr.perPR[0]!.tokens.totalTokens).toBe(360);
+    expect(wr.perPR[0]!.tokens.inputTokens).toBe(300);
+    expect(wr.perPR[0]!.tokens.outputTokens).toBe(60);
+    // Window 2: msgs 4-6 (3 × 120 = 360)
+    expect(wr.perPR[1]!.tokens.totalTokens).toBe(360);
+    // Overhead: msgs 7-8 (2 × 120 = 240)
+    expect(wr.overhead.totalTokens).toBe(240);
+    // Session total = 960
+    expect(wr.session.tokens.totalTokens).toBe(960);
+  });
+});
+
+describe("fixture: claude-dry-session — no PRs", () => {
+  // 3 messages (3 × 120 = 360 tokens), no pr-link → all tokens are dry spend.
+  it("marks session as dry with full token count", async () => {
+    const result = await scanClaudeCodeSession(
+      join(tokenFixturesDir, "claude-dry-session.jsonl"),
+    );
+
+    expect(result.rawPrEntries).toHaveLength(0);
+    expect(result.tokens).toHaveLength(3);
+
+    const wr = windowSession(toWindowInput(result));
+
+    expect(wr.isDrySession).toBe(true);
+    expect(wr.perPR).toHaveLength(0);
+    expect(wr.overhead.totalTokens).toBe(0);
+    // All 3 messages: 3 × 120 = 360
+    expect(wr.session.tokens.totalTokens).toBe(360);
+    expect(wr.session.tokens.inputTokens).toBe(300);
+    expect(wr.session.tokens.outputTokens).toBe(60);
+  });
+});
+
+describe("fixture: claude-sidechain — sidechain token split", () => {
+  // Layout (all before PR#200 at T+30):
+  //   req-s1 main    (isSidechain:false): input:100 + output:20 = 120
+  //   req-s2 sidechain (isSidechain:true): input:50  + output:10 = 60
+  //   req-s3 main    (isSidechain:false): input:100 + output:20 = 120
+  //   Window total = 300; sidechain portion = 60
+  it("separates sidechain tokens from main-chain tokens", async () => {
+    const result = await scanClaudeCodeSession(
+      join(tokenFixturesDir, "claude-sidechain.jsonl"),
+    );
+
+    expect(result.rawPrEntries).toHaveLength(1);
+    expect(result.tokens).toHaveLength(3);
+
+    const wr = windowSession(toWindowInput(result));
+
+    expect(wr.isDrySession).toBe(false);
+    expect(wr.perPR).toHaveLength(1);
+    // Window total: 120 + 60 + 120 = 300
+    expect(wr.perPR[0]!.tokens.totalTokens).toBe(300);
+    // Sidechain portion: 60 (only req-s2)
+    expect(wr.perPR[0]!.sidechainTokens.totalTokens).toBe(60);
+    // Session-level mirrors the window (no overhead)
+    expect(wr.session.tokens.totalTokens).toBe(300);
+    expect(wr.session.sidechainTokens.totalTokens).toBe(60);
+    expect(wr.overhead.totalTokens).toBe(0);
+  });
+});
+
+describe("fixture: claude-dedupe — duplicate requestId suppression", () => {
+  // req-dd1 appears twice at T+05 and T+06 (same requestId).
+  // Only the first occurrence is counted: 120 tokens.
+  // req-dd2 appears once: input:60 + output:20 = 80 tokens.
+  // Window total after dedup = 120 + 80 = 200 (not 120+120+80 = 320).
+  it("collapses duplicate requestId entries to one token event", async () => {
+    const result = await scanClaudeCodeSession(
+      join(tokenFixturesDir, "claude-dedupe.jsonl"),
+    );
+
+    // Two unique requestIds → two token events (not three)
+    expect(result.tokens).toHaveLength(2);
+
+    const wr = windowSession(toWindowInput(result));
+
+    expect(wr.perPR).toHaveLength(1);
+    // 120 (req-dd1) + 80 (req-dd2) = 200
+    expect(wr.perPR[0]!.tokens.totalTokens).toBe(200);
+    expect(wr.session.tokens.totalTokens).toBe(200);
+  });
+});
+
+describe("fixture: codex-cumulative — monotonically rising cumulative totals", () => {
+  // Three token_count events, each adding delta={input:100, cached:50, output:30} = 180:
+  //   event1 T+05: cumulative {input:100, cached:50, output:30} → delta 180 (window 1)
+  //   response_item T+10: PR#400 (window boundary)
+  //   event2 T+15: cumulative {input:200, cached:100, output:60} → delta 180 (overhead)
+  //   event3 T+20: cumulative {input:300, cached:150, output:90} → delta 180 (overhead)
+  //   Session total = 3 × 180 = 540; window 1 = 180; overhead = 360
+  it("computes per-event deltas from cumulative counters", async () => {
+    const result = await scanCodexSession(
+      join(tokenFixturesDir, "codex-cumulative.jsonl"),
+    );
+
+    expect(result.sessionId).toBe("codex-cum-001");
+    expect(result.rawPrEntries).toHaveLength(1);
+    expect(result.tokens).toHaveLength(3);
+
+    // Each delta: input=100, cacheRead=50, output=30 → total=180
+    for (const t of result.tokens) {
+      expect(t.tokens.totalTokens).toBe(180);
+      expect(t.tokens.inputTokens).toBe(100);
+      expect(t.tokens.cacheReadTokens).toBe(50);
+      expect(t.tokens.outputTokens).toBe(30);
+    }
+
+    const wr = windowSession({
+      sessionId: result.sessionId ?? "unknown",
+      project: "fixture/repo",
+      sessionStart: result.sessionStart ?? "2026-06-10T13:00:00.000Z",
+      sessionEnd: result.sessionEnd,
+      prs: result.rawPrEntries.map((p) => ({
+        prUrl: p.prUrl,
+        prTimestamp: p.timestamp,
+      })),
+      tokens: result.tokens,
+    });
+
+    expect(wr.isDrySession).toBe(false);
+    expect(wr.perPR).toHaveLength(1);
+    // Window 1: only event1 (T+05) is before PR@T+10 → 180 tokens
+    expect(wr.perPR[0]!.tokens.totalTokens).toBe(180);
+    // Overhead: events 2 and 3 (both after T+10) → 360
+    expect(wr.overhead.totalTokens).toBe(360);
+    // Session total = 540
+    expect(wr.session.tokens.totalTokens).toBe(540);
+  });
+});
+
+describe("fixture: out-of-order — non-monotonic timestamps degrade to session-only", () => {
+  // req-oo1 (T+10) appears before req-oo2 (T+05) in the file (out of order).
+  // req-oo3 carries an invalid month-13 timestamp ("2026-13-10T14:15:00.000Z"),
+  // which parseTs() cannot resolve. windowSession detects a null tsMs and
+  // falls back to session-only attribution (no per-PR windows).
+  // All 3 events still count toward the session total: 3 × 120 = 360.
+  it("falls back to session-only and still reports full session token count", async () => {
+    const result = await scanClaudeCodeSession(
+      join(tokenFixturesDir, "out-of-order.jsonl"),
+    );
+
+    // All 3 assistant entries are scanned (including the one with invalid ts)
+    expect(result.tokens).toHaveLength(3);
+
+    const wr = windowSession(toWindowInput(result));
+
+    expect(wr.session.tokensAttributed).toBe("session-only");
+    expect(wr.perPR).toHaveLength(0);
+    // Session total: 3 × 120 = 360 (all events included even with invalid ts)
+    expect(wr.session.tokens.totalTokens).toBe(360);
+  });
+});
+
+describe("fixture: unknown-model — unrecognised model produces null cost", () => {
+  // Single message with model:"claude-mystery" (not in the pricing rate map).
+  // Window total = 120; with a pricingFn, estimatedCostUsd=null and
+  // pricingFlag="unknown-model".
+  it("returns unknown-model flag when pricingFn cannot price the model", async () => {
+    const result = await scanClaudeCodeSession(
+      join(tokenFixturesDir, "unknown-model.jsonl"),
+    );
+
+    expect(result.tokens).toHaveLength(1);
+    expect(result.tokens[0]!.model).toBe("claude-mystery");
+
+    const wr = windowSession({
+      ...toWindowInput(result),
+      pricingFn: fixturePricingFn,
+    });
+
+    expect(wr.perPR).toHaveLength(1);
+    // Window 1: 120 tokens (input:100 + output:20)
+    expect(wr.perPR[0]!.tokens.totalTokens).toBe(120);
+    // Unknown model → null cost
+    expect(wr.perPR[0]!.estimatedCostUsd).toBeNull();
+    expect(wr.perPR[0]!.pricingFlag).toBe("unknown-model");
+    expect(wr.session.estimatedCostUsd).toBeNull();
+    expect(wr.session.pricingFlag).toBe("unknown-model");
   });
 });

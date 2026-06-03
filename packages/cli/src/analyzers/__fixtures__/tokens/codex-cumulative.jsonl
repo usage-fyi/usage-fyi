@@ -1,0 +1,5 @@
+{"type":"session_meta","session_id":"codex-cum-001","cwd":"/Users/alice/work/fixture-codex","model":"gpt-4o"}
+{"type":"event_msg","timestamp":"2026-06-10T13:05:00.000Z","payload":{"type":"token_count","total_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":30,"reasoning_output_tokens":0}}}
+{"type":"response_item","timestamp":"2026-06-10T13:10:00.000Z","payload":{"output":"PR created:\nhttps://github.com/fixture/repo/pull/400"}}
+{"type":"event_msg","timestamp":"2026-06-10T13:15:00.000Z","payload":{"type":"token_count","total_token_usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":60,"reasoning_output_tokens":0}}}
+{"type":"event_msg","timestamp":"2026-06-10T13:20:00.000Z","payload":{"type":"token_count","total_token_usage":{"input_tokens":300,"cached_input_tokens":150,"output_tokens":90,"reasoning_output_tokens":0}}}

@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-06-10T14:00:00.000Z","cwd":"/Users/alice/work/fixture-oo"}
+{"type":"assistant","timestamp":"2026-06-10T14:10:00.000Z","requestId":"req-oo1","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"cwd":"/Users/alice/work/fixture-oo"}
+{"type":"assistant","timestamp":"2026-06-10T14:05:00.000Z","requestId":"req-oo2","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"cwd":"/Users/alice/work/fixture-oo"}
+{"type":"assistant","timestamp":"2026-13-10T14:15:00.000Z","requestId":"req-oo3","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"cwd":"/Users/alice/work/fixture-oo"}
+{"type":"pr-link","sessionId":"session-oo-001","prNumber":500,"prUrl":"https://github.com/fixture/repo/pull/500","prRepository":"fixture/repo","timestamp":"2026-06-10T14:30:00.000Z"}
