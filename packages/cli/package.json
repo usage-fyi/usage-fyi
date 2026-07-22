@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@usage-fyi/wire": "^0.1.0",
-    "ccusage": "20.0.5"
+    "ccusage": "20.0.18"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
