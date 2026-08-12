@@ -46,7 +46,7 @@
     "ccusage": "20.0.5"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.2.0",
     "oxlint": "^1.67.0",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3",
