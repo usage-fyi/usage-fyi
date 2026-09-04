@@ -524,3 +524,121 @@ describe("slim() — agents[] fallback behaviour", () => {
     assertInvariants(snap);
   });
 });
+
+// ─── cost is preserved across splits ─────────────────────────────────────────
+
+describe("slim() — sub-cent splits do not lose money", () => {
+  /**
+   * Splitting a raw float cost N ways and rounding each share to 2dp
+   * independently is not the same as rounding the sum: $0.01 across three
+   * buckets is $0.00333 each, which rounds to zero three times and drops the
+   * cent from the day total. The split has to happen in whole cents.
+   */
+  it("keeps a one-cent cost when three agents claim the same model", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-01",
+          modelsUsed: ["shared-model"],
+          inputTokens: 300,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 300,
+          totalCost: 0.01,
+          metadata: { agents: ["a", "b", "c"] },
+          modelBreakdowns: [
+            {
+              modelName: "shared-model",
+              inputTokens: 300,
+              outputTokens: 0,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 0,
+              cost: 0.01,
+            },
+          ],
+        },
+      ],
+      perAgent: {
+        a: { daily: [{ date: "2026-08-01", modelsUsed: ["shared-model"] }] },
+        b: { daily: [{ date: "2026-08-01", modelsUsed: ["shared-model"] }] },
+        c: { daily: [{ date: "2026-08-01", modelsUsed: ["shared-model"] }] },
+      },
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(0.01);
+    expect(snap.totals.c).toBe(0.01);
+    // The remaining cent goes to the alphabetically-first agent, so the
+    // result stays deterministic across runs.
+    expect(snap.daily[0]!.mb.map((e) => e.c)).toEqual([0.01, 0, 0]);
+    assertInvariants(snap);
+  });
+
+  it("keeps the day cost when three models split it in the legacy path", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-02",
+          modelsUsed: ["m-a", "m-b", "m-c"],
+          inputTokens: 300,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 300,
+          totalCost: 0.01,
+          metadata: { agents: ["claude"] },
+          // No modelBreakdowns — forces the even-split fallback.
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(0.01);
+    assertInvariants(snap);
+  });
+
+  it("preserves an odd cost across an even split", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-03",
+          modelsUsed: ["shared-model"],
+          inputTokens: 1000,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 1000,
+          totalCost: 12.37,
+          metadata: { agents: ["a", "b"] },
+          modelBreakdowns: [
+            {
+              modelName: "shared-model",
+              inputTokens: 1000,
+              outputTokens: 0,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 0,
+              cost: 12.37,
+            },
+          ],
+        },
+      ],
+      perAgent: {
+        a: { daily: [{ date: "2026-08-03", modelsUsed: ["shared-model"] }] },
+        b: { daily: [{ date: "2026-08-03", modelsUsed: ["shared-model"] }] },
+      },
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(12.37);
+    expect(snap.daily[0]!.mb.map((e) => e.c)).toEqual([6.19, 6.18]);
+    assertInvariants(snap);
+  });
+});

@@ -75,6 +75,12 @@ keep working.
 
 ### Fixed
 
+- **Sub-cent cost shares no longer vanish.** When a day's cost was split
+  across agents or models, each share was rounded to 2dp independently, so a
+  cost of $0.01 split three ways rounded to $0.00 three times and the cent
+  disappeared from the day total. Splits now distribute whole cents, with the
+  remainder going to the alphabetically-first bucket. This affects the
+  fallback attribution path only; the `--by-agent` path never splits.
 - `pr-stats` no longer spawns a `ccusage` subprocess when there are no
   sessions to price.
 - README no longer claims `--json` makes no network call. It publishes, like

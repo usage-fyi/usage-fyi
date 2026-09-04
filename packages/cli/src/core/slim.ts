@@ -608,9 +608,9 @@ function finalizeDay(date: string, mb: ModelBreakdown[]): DailyEntry {
 /**
  * Distribute (i, o, cc, cr, t, c) across N buckets according to `ratios`
  * (which must sum to 1.0). Tokens use integer floor; the integer remainder
- * is added to bucket 0 so sums are exact. Cost is multiplied unrounded and
- * the caller is responsible for round2 + remainder handling (here we just
- * steer the rounding remainder onto bucket 0 so round2(sum(c)) is stable).
+ * is added to bucket 0 so sums are exact. Cost is split the same way but in
+ * whole cents, so the 2dp-rounded shares the caller emits still sum to
+ * round2(src.c) rather than losing sub-cent shares to rounding.
  */
 function distribute(
   src: { i: number; o: number; cc: number; cr: number; t: number; c: number },
@@ -639,11 +639,19 @@ function distribute(
   assign("cr", src.cr);
   assign("t", src.t);
 
-  // Cost remainder: ensure round2(sum(parts.c)) === round2(src.c) by
-  // steering the float-residual onto bucket 0 BEFORE the caller rounds.
-  let csum = 0;
-  for (let k = 0; k < n; k++) csum += parts[k]!.c;
-  parts[0]!.c += src.c - csum;
+  // Cost is split in whole cents, not raw floats. The caller rounds each
+  // share to 2dp independently, and rounding N shares then summing is not
+  // the same as rounding the sum: splitting $0.01 three ways gives three
+  // shares of $0.00333, each of which rounds to zero, and the cent vanishes
+  // from the day total. Distributing integer cents (remainder to bucket 0,
+  // the alphabetically-first agent) makes the shares sum to round2(src.c)
+  // exactly, so the caller's rounding is a no-op.
+  const totalCents = Math.round(src.c * 100);
+  const centShares = ratios.map((r) => Math.floor(totalCents * r));
+  let assignedCents = 0;
+  for (const cents of centShares) assignedCents += cents;
+  centShares[0]! += totalCents - assignedCents;
+  for (let k = 0; k < n; k++) parts[k]!.c = centShares[k]! / 100;
 
   return parts;
 }
