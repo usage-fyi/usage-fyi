@@ -336,6 +336,14 @@ export function fitRateVector(obs: Observation[]): RateVector | null {
  * single blended $/token rate. That is coarse -- it prices a cache-read
  * token the same as an output token -- but it is bounded and never wild.
  *
+ * A caveat worth knowing: the recovered rates are the ones that best explain
+ * this user's costs, not necessarily the published list prices. Input and
+ * cache-read token counts are strongly correlated in agent usage, so when a
+ * model's input volume is small the fit often pins its input rate at zero and
+ * carries that cost on the other coefficients. Total cost stays accurate --
+ * that is what is being optimised -- but do not read an individual
+ * coefficient as a price list.
+ *
  * Exported for unit testing without spawning the subprocess.
  */
 export function buildRateTable(rows: DailyRow[]): Map<string, ModelRate> {
