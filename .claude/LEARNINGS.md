@@ -113,6 +113,26 @@ exact price. That is acceptable here and is why the fit is not expected to hit
 
 ---
 
+## Measured, then deliberately not done
+
+### Sidechain-replay deduplication in the Claude Code scanner
+
+`ccusage` documents a dedup rule our scanner does not implement: a sidechain
+file can replay a parent message with the **same `message.id` but a different
+`requestId`**, including the parent's cache-read usage, and ccusage drops the
+sidechain copy (upstream issue #913). Our scanner dedups by `requestId` only,
+so in principle it would double-count those tokens.
+
+Measured across **31,311 real Claude Code sessions**: `requestId` dedup already
+drops 173,877 records, only **13** message IDs repeat afterwards, and **none of
+them involve a sidechain**. Zero tokens would change.
+
+Do not implement this without re-measuring first -- the scan script is trivial
+(group assistant records by `message.id` after `requestId` dedup, look for
+groups where any member has `isSidechain: true`).
+
+---
+
 ## Repo conventions
 
 - `npm run verify` = typecheck + lint + test across both workspaces. Run it
