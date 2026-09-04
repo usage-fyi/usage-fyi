@@ -30,6 +30,21 @@ interface RawDailyEntry {
    * Present in current ccusage; absent in older fixtures.
    */
   modelBreakdowns?: RawModelBreakdown[];
+  /**
+   * Per-(date, agent) breakdown emitted by `ccusage daily --json --by-agent`
+   * (ccusage >= 20.0.16). This is EXACT attribution straight from ccusage:
+   * each agent carries its own modelBreakdowns[] and those numbers sum back
+   * to the day totals. When present it supersedes every heuristic below --
+   * no per-agent subprocess probing, no even-splitting of ambiguous
+   * (date, model) pairs, no name-prefix inference.
+   */
+  agents?: RawAgentBreakdown[];
+}
+
+/** One agent's slice of a day, from `daily --json --by-agent`. */
+interface RawAgentBreakdown {
+  agent: string;
+  modelBreakdowns?: RawModelBreakdown[];
 }
 
 interface RawModelBreakdown {
@@ -386,6 +401,10 @@ function buildDailyEntry(
     };
   }
 
+  // Fast path: ccusage told us the exact per-agent split. No heuristics.
+  const exact = buildMbFromAgents(r);
+  if (exact) return finalizeDay(date, exact);
+
   // Build per-(model) numeric breakdown. Prefer ccusage's own
   // modelBreakdowns[] — it always sums to the day totals exactly.
   const perModel: {
@@ -461,7 +480,7 @@ function buildDailyEntry(
         cc: pm.cc,
         cr: pm.cr,
         t: pm.t,
-        c: round2(pm.c),
+        c: pm.c,
       });
     } else {
       // Even split across claiming agents (alphabetical). Deterministic
@@ -480,20 +499,81 @@ function buildDailyEntry(
           cc: p.cc,
           cr: p.cr,
           t: p.t,
-          c: round2(p.c),
+          c: p.c,
         });
       }
     }
   }
 
+  return finalizeDay(date, mb);
+}
+
+/**
+ * Build mb[] straight from ccusage's own per-agent breakdown
+ * (`daily --json --by-agent`). Returns null when the payload is absent or
+ * carries no model rows, so the caller falls back to the heuristic path.
+ *
+ * Entries are merged by (agent, model): ccusage emits one modelBreakdowns[]
+ * row per model per agent, but merging keeps us robust to a future shape
+ * that splits a model across several rows.
+ */
+function buildMbFromAgents(r: RawDailyEntry): ModelBreakdown[] | null {
+  if (!Array.isArray(r.agents) || r.agents.length === 0) return null;
+
+  const merged = new Map<string, ModelBreakdown>();
+  for (const ag of r.agents) {
+    const agent = typeof ag?.agent === "string" ? ag.agent : "";
+    if (agent === "") continue;
+    for (const b of ag.modelBreakdowns ?? []) {
+      const model = typeof b?.modelName === "string" ? b.modelName : "";
+      if (model === "") continue;
+      const i = b.inputTokens ?? 0;
+      const o = b.outputTokens ?? 0;
+      const cc = b.cacheCreationTokens ?? 0;
+      const cr = b.cacheReadTokens ?? 0;
+      const key = `${agent}\x00${model}`;
+      const prev = merged.get(key);
+      if (prev) {
+        prev.i += i;
+        prev.o += o;
+        prev.cc += cc;
+        prev.cr += cr;
+        prev.t += b.totalTokens ?? i + o + cc + cr;
+        prev.c += b.cost ?? 0;
+      } else {
+        merged.set(key, {
+          a: agent,
+          m: model,
+          i,
+          o,
+          cc,
+          cr,
+          t: b.totalTokens ?? i + o + cc + cr,
+          c: b.cost ?? 0,
+        });
+      }
+    }
+  }
+
+  if (merged.size === 0) return null;
+  // Costs stay raw here; finalizeDay() does the only rounding, so it can
+  // allocate whole cents across the whole day at once.
+  return [...merged.values()];
+}
+
+/**
+ * Shared finalization for a day's mb[]: sort deterministically, then
+ * re-derive the day-level totals and the m/a arrays from it so the five
+ * server-side invariants hold by construction.
+ */
+function finalizeDay(date: string, mb: ModelBreakdown[]): DailyEntry {
   // Sort mb[] ASC by (a, m) for determinism.
   mb.sort((x, y) =>
     x.a < y.a ? -1 : x.a > y.a ? 1 : x.m < y.m ? -1 : x.m > y.m ? 1 : 0,
   );
 
   // Recompute day-level totals from mb[] to maintain invariant 1.
-  // For tokens this is an exact integer sum; for cost it's the rounded sum
-  // (so daily.c === round2(sum(mb.c)) ≡ invariant 2).
+  // Tokens are an exact integer sum.
   let i = 0;
   let o = 0;
   let cc = 0;
@@ -508,6 +588,13 @@ function buildDailyEntry(
     t += e.t;
     cSum += e.c;
   }
+
+  // Cost: the wire format stores 2dp on every mb entry, so the entries have
+  // to be rounded -- but rounding each one independently and summing drifts
+  // away from the real day cost by up to half a cent per entry. Allocate
+  // whole cents by largest remainder instead, so the entries sum to
+  // round2(cSum) exactly and the day total equals what ccusage reported.
+  allocateCents(mb, cSum);
 
   const m = [...new Set(mb.map((e) => e.m))].sort();
   const a = [...new Set(mb.map((e) => e.a))].sort();
@@ -527,11 +614,58 @@ function buildDailyEntry(
 }
 
 /**
+ * Round each entry's cost to whole cents such that they sum to exactly
+ * round2(total), using the largest-remainder method.
+ *
+ * Every entry first takes its floor in cents; the leftover cents then go to
+ * the entries with the largest discarded fraction. Ties break on the entry's
+ * existing (a, m) sort position, so the result is deterministic.
+ *
+ * Mutates `mb` in place.
+ */
+function allocateCents(mb: ModelBreakdown[], total: number): void {
+  if (mb.length === 0) return;
+
+  const targetCents = Math.round(total * 100);
+  const floors = mb.map((e) => Math.floor(e.c * 100));
+
+  let assigned = 0;
+  for (const f of floors) assigned += f;
+
+  let leftover = targetCents - assigned;
+  if (leftover > 0) {
+    // Hand out the remaining cents to the largest discarded fractions first.
+    const order = mb
+      .map((e, idx) => ({ idx, frac: e.c * 100 - floors[idx]! }))
+      .sort((x, y) => (y.frac !== x.frac ? y.frac - x.frac : x.idx - y.idx));
+    for (const { idx } of order) {
+      if (leftover === 0) break;
+      floors[idx]!++;
+      leftover--;
+    }
+  } else if (leftover < 0) {
+    // Floating-point noise pushed the floors above the target; take cents
+    // back from the smallest fractions first.
+    const order = mb
+      .map((e, idx) => ({ idx, frac: e.c * 100 - floors[idx]! }))
+      .sort((x, y) => (x.frac !== y.frac ? x.frac - y.frac : x.idx - y.idx));
+    for (const { idx } of order) {
+      if (leftover === 0) break;
+      if (floors[idx]! === 0) continue;
+      floors[idx]!--;
+      leftover++;
+    }
+  }
+
+  for (let k = 0; k < mb.length; k++) mb[k]!.c = floors[k]! / 100;
+}
+
+/**
  * Distribute (i, o, cc, cr, t, c) across N buckets according to `ratios`
  * (which must sum to 1.0). Tokens use integer floor; the integer remainder
- * is added to bucket 0 so sums are exact. Cost is multiplied unrounded and
- * the caller is responsible for round2 + remainder handling (here we just
- * steer the rounding remainder onto bucket 0 so round2(sum(c)) is stable).
+ * is added to bucket 0 so sums are exact. Cost is split the same way but in
+ * whole cents, so the 2dp-rounded shares the caller emits still sum to
+ * round2(src.c) rather than losing sub-cent shares to rounding.
  */
 function distribute(
   src: { i: number; o: number; cc: number; cr: number; t: number; c: number },
@@ -560,11 +694,19 @@ function distribute(
   assign("cr", src.cr);
   assign("t", src.t);
 
-  // Cost remainder: ensure round2(sum(parts.c)) === round2(src.c) by
-  // steering the float-residual onto bucket 0 BEFORE the caller rounds.
-  let csum = 0;
-  for (let k = 0; k < n; k++) csum += parts[k]!.c;
-  parts[0]!.c += src.c - csum;
+  // Cost is split in whole cents, not raw floats. The caller rounds each
+  // share to 2dp independently, and rounding N shares then summing is not
+  // the same as rounding the sum: splitting $0.01 three ways gives three
+  // shares of $0.00333, each of which rounds to zero, and the cent vanishes
+  // from the day total. Distributing integer cents (remainder to bucket 0,
+  // the alphabetically-first agent) makes the shares sum to round2(src.c)
+  // exactly, so the caller's rounding is a no-op.
+  const totalCents = Math.round(src.c * 100);
+  const centShares = ratios.map((r) => Math.floor(totalCents * r));
+  let assignedCents = 0;
+  for (const cents of centShares) assignedCents += cents;
+  centShares[0]! += totalCents - assignedCents;
+  for (let k = 0; k < n; k++) parts[k]!.c = centShares[k]! / 100;
 
   return parts;
 }

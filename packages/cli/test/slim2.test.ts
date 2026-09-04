@@ -363,3 +363,365 @@ describe("slim() — legacy raw without modelBreakdowns falls back gracefully", 
     assertInvariants(snap);
   });
 });
+
+// ─── exact per-agent attribution (ccusage --by-agent) ────────────────────────
+
+describe("slim() — exact attribution from daily[].agents[]", () => {
+  /**
+   * Same model used by two different harnesses on the same day. Under the
+   * legacy heuristic this was ambiguous and got split evenly; with
+   * `--by-agent` ccusage tells us the real split, so the numbers must be
+   * carried through verbatim rather than halved.
+   */
+  const raw: RawCcusage = {
+    daily: [
+      {
+        period: "2026-08-01",
+        modelsUsed: ["claude-sonnet-5", "gpt-5.5"],
+        inputTokens: 1000,
+        outputTokens: 300,
+        cacheCreationTokens: 40,
+        cacheReadTokens: 8000,
+        totalTokens: 9340,
+        totalCost: 6.0,
+        metadata: { agents: ["claude", "opencode"] },
+        modelBreakdowns: [
+          {
+            modelName: "claude-sonnet-5",
+            inputTokens: 900,
+            outputTokens: 250,
+            cacheCreationTokens: 40,
+            cacheReadTokens: 7000,
+            cost: 5,
+          },
+          {
+            modelName: "gpt-5.5",
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 1000,
+            cost: 1,
+          },
+        ],
+        agents: [
+          {
+            agent: "claude",
+            modelBreakdowns: [
+              {
+                modelName: "claude-sonnet-5",
+                inputTokens: 700,
+                outputTokens: 200,
+                cacheCreationTokens: 40,
+                cacheReadTokens: 6000,
+                cost: 4,
+              },
+            ],
+          },
+          {
+            agent: "opencode",
+            modelBreakdowns: [
+              {
+                modelName: "claude-sonnet-5",
+                inputTokens: 200,
+                outputTokens: 50,
+                cacheCreationTokens: 0,
+                cacheReadTokens: 1000,
+                cost: 1,
+              },
+              {
+                modelName: "gpt-5.5",
+                inputTokens: 100,
+                outputTokens: 50,
+                cacheCreationTokens: 0,
+                cacheReadTokens: 1000,
+                cost: 1,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    // Deliberately contradicts agents[] — the exact payload must win.
+    perAgent: { claude: { daily: [{ date: "2026-08-01", modelsUsed: ["gpt-5.5"] }] } },
+  };
+
+  const snap = slim(raw, { origin: "tool-collected", generatedAt: FIXED_TS });
+  const day = snap.daily[0]!;
+
+  it("emits one mb entry per (agent, model) pair", () => {
+    expect(day.mb).toHaveLength(3);
+    expect(day.mb.map((e) => `${e.a}/${e.m}`)).toEqual([
+      "claude/claude-sonnet-5",
+      "opencode/claude-sonnet-5",
+      "opencode/gpt-5.5",
+    ]);
+  });
+
+  it("carries the real split verbatim instead of splitting evenly", () => {
+    const claude = day.mb.find((e) => e.a === "claude")!;
+    expect(claude.i).toBe(700);
+    expect(claude.o).toBe(200);
+    expect(claude.cr).toBe(6000);
+    expect(claude.c).toBe(4);
+    // An even split of the model's 900 input tokens would have been 450.
+    expect(claude.i).not.toBe(450);
+  });
+
+  it("ignores the per-agent probe lookup when agents[] is present", () => {
+    // perAgent claims claude used gpt-5.5; agents[] says otherwise.
+    expect(day.mb.some((e) => e.a === "claude" && e.m === "gpt-5.5")).toBe(false);
+  });
+
+  it("derives day totals as the exact sum of the agent rows", () => {
+    expect(day.i).toBe(1000);
+    expect(day.o).toBe(300);
+    expect(day.cc).toBe(40);
+    expect(day.cr).toBe(8000);
+    expect(day.t).toBe(9340);
+    expect(day.c).toBe(6);
+  });
+
+  it("lists every agent that actually used tokens", () => {
+    expect(day.a).toEqual(["claude", "opencode"]);
+    expect(day.m).toEqual(["claude-sonnet-5", "gpt-5.5"]);
+  });
+
+  it("satisfies all invariants", () => {
+    assertInvariants(snap);
+  });
+});
+
+describe("slim() — agents[] fallback behaviour", () => {
+  it("falls back to the heuristic path when agents[] carries no model rows", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-02",
+          modelsUsed: ["claude-opus-5"],
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 15,
+          totalCost: 0.5,
+          metadata: { agents: ["claude"] },
+          modelBreakdowns: [
+            {
+              modelName: "claude-opus-5",
+              inputTokens: 10,
+              outputTokens: 5,
+              cost: 0.5,
+            },
+          ],
+          agents: [{ agent: "claude", modelBreakdowns: [] }],
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, { origin: "tool-collected", generatedAt: FIXED_TS });
+    expect(snap.daily[0]!.mb).toHaveLength(1);
+    expect(snap.daily[0]!.mb[0]!.a).toBe("claude");
+    assertInvariants(snap);
+  });
+});
+
+// ─── cost is preserved across splits ─────────────────────────────────────────
+
+describe("slim() — sub-cent splits do not lose money", () => {
+  /**
+   * Splitting a raw float cost N ways and rounding each share to 2dp
+   * independently is not the same as rounding the sum: $0.01 across three
+   * buckets is $0.00333 each, which rounds to zero three times and drops the
+   * cent from the day total. The split has to happen in whole cents.
+   */
+  it("keeps a one-cent cost when three agents claim the same model", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-01",
+          modelsUsed: ["shared-model"],
+          inputTokens: 300,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 300,
+          totalCost: 0.01,
+          metadata: { agents: ["a", "b", "c"] },
+          modelBreakdowns: [
+            {
+              modelName: "shared-model",
+              inputTokens: 300,
+              outputTokens: 0,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 0,
+              cost: 0.01,
+            },
+          ],
+        },
+      ],
+      perAgent: {
+        a: { daily: [{ date: "2026-08-01", modelsUsed: ["shared-model"] }] },
+        b: { daily: [{ date: "2026-08-01", modelsUsed: ["shared-model"] }] },
+        c: { daily: [{ date: "2026-08-01", modelsUsed: ["shared-model"] }] },
+      },
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(0.01);
+    expect(snap.totals.c).toBe(0.01);
+    // The remaining cent goes to the alphabetically-first agent, so the
+    // result stays deterministic across runs.
+    expect(snap.daily[0]!.mb.map((e) => e.c)).toEqual([0.01, 0, 0]);
+    assertInvariants(snap);
+  });
+
+  it("keeps the day cost when three models split it in the legacy path", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-02",
+          modelsUsed: ["m-a", "m-b", "m-c"],
+          inputTokens: 300,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 300,
+          totalCost: 0.01,
+          metadata: { agents: ["claude"] },
+          // No modelBreakdowns — forces the even-split fallback.
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(0.01);
+    assertInvariants(snap);
+  });
+
+  it("preserves an odd cost across an even split", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-03",
+          modelsUsed: ["shared-model"],
+          inputTokens: 1000,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 1000,
+          totalCost: 12.37,
+          metadata: { agents: ["a", "b"] },
+          modelBreakdowns: [
+            {
+              modelName: "shared-model",
+              inputTokens: 1000,
+              outputTokens: 0,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 0,
+              cost: 12.37,
+            },
+          ],
+        },
+      ],
+      perAgent: {
+        a: { daily: [{ date: "2026-08-03", modelsUsed: ["shared-model"] }] },
+        b: { daily: [{ date: "2026-08-03", modelsUsed: ["shared-model"] }] },
+      },
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(12.37);
+    expect(snap.daily[0]!.mb.map((e) => e.c)).toEqual([6.19, 6.18]);
+    assertInvariants(snap);
+  });
+});
+
+describe("slim() — day cost matches the source exactly", () => {
+  /**
+   * The wire format stores 2dp on every mb entry. Rounding each entry
+   * independently and summing drifts from the real day cost by up to half a
+   * cent per entry, so cents are allocated by largest remainder instead.
+   */
+  it("does not drift when many entries each carry a half-cent fraction", () => {
+    const models = ["m1", "m2", "m3", "m4", "m5"];
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-04",
+          modelsUsed: models,
+          inputTokens: 500,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 500,
+          // 5 x $0.125 = $0.625. Rounding each to 2dp gives 5 x $0.13 =
+          // $0.65, which is 2.5 cents too much.
+          totalCost: 0.625,
+          metadata: { agents: ["claude"] },
+          modelBreakdowns: models.map((m) => ({
+            modelName: m,
+            inputTokens: 100,
+            outputTokens: 0,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            cost: 0.125,
+          })),
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    const day = snap.daily[0]!;
+    expect(day.c).toBe(0.63); // round2(0.625)
+    expect(day.mb.reduce((acc, e) => acc + e.c, 0)).toBeCloseTo(0.63, 10);
+    // Every entry is still a whole number of cents.
+    for (const e of day.mb) expect(Math.round(e.c * 100)).toBe(e.c * 100);
+    assertInvariants(snap);
+  });
+
+  it("keeps every entry at zero when the day cost is zero", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-05",
+          modelsUsed: ["local-model"],
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 150,
+          totalCost: 0,
+          metadata: { agents: ["pi"] },
+          modelBreakdowns: [
+            {
+              modelName: "local-model",
+              inputTokens: 100,
+              outputTokens: 50,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 0,
+              cost: 0,
+            },
+          ],
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(0);
+    expect(snap.daily[0]!.mb[0]!.c).toBe(0);
+    assertInvariants(snap);
+  });
+});
