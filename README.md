@@ -135,7 +135,9 @@ src/
 ├── style.ts          # Style resolution
 ├── errors.ts         # Exit codes and error formatting
 ├── core/             # Zero-dep snapshot schema, hashing, validation
-└── adapters/         # Usage-source adapters (ccusage, extensible)
+├── adapters/         # Usage-source adapters (ccusage, extensible)
+├── analyzers/        # pr-stats: session scanners, windowing, aggregation
+└── commands/         # Subcommand entry points
 ```
 
 ---
