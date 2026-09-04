@@ -480,7 +480,7 @@ function buildDailyEntry(
         cc: pm.cc,
         cr: pm.cr,
         t: pm.t,
-        c: round2(pm.c),
+        c: pm.c,
       });
     } else {
       // Even split across claiming agents (alphabetical). Deterministic
@@ -499,7 +499,7 @@ function buildDailyEntry(
           cc: p.cc,
           cr: p.cr,
           t: p.t,
-          c: round2(p.c),
+          c: p.c,
         });
       }
     }
@@ -556,7 +556,9 @@ function buildMbFromAgents(r: RawDailyEntry): ModelBreakdown[] | null {
   }
 
   if (merged.size === 0) return null;
-  return [...merged.values()].map((e) => ({ ...e, c: round2(e.c) }));
+  // Costs stay raw here; finalizeDay() does the only rounding, so it can
+  // allocate whole cents across the whole day at once.
+  return [...merged.values()];
 }
 
 /**
@@ -571,8 +573,7 @@ function finalizeDay(date: string, mb: ModelBreakdown[]): DailyEntry {
   );
 
   // Recompute day-level totals from mb[] to maintain invariant 1.
-  // For tokens this is an exact integer sum; for cost it's the rounded sum
-  // (so daily.c === round2(sum(mb.c)) ≡ invariant 2).
+  // Tokens are an exact integer sum.
   let i = 0;
   let o = 0;
   let cc = 0;
@@ -587,6 +588,13 @@ function finalizeDay(date: string, mb: ModelBreakdown[]): DailyEntry {
     t += e.t;
     cSum += e.c;
   }
+
+  // Cost: the wire format stores 2dp on every mb entry, so the entries have
+  // to be rounded -- but rounding each one independently and summing drifts
+  // away from the real day cost by up to half a cent per entry. Allocate
+  // whole cents by largest remainder instead, so the entries sum to
+  // round2(cSum) exactly and the day total equals what ccusage reported.
+  allocateCents(mb, cSum);
 
   const m = [...new Set(mb.map((e) => e.m))].sort();
   const a = [...new Set(mb.map((e) => e.a))].sort();
@@ -603,6 +611,53 @@ function finalizeDay(date: string, mb: ModelBreakdown[]): DailyEntry {
     a,
     mb,
   };
+}
+
+/**
+ * Round each entry's cost to whole cents such that they sum to exactly
+ * round2(total), using the largest-remainder method.
+ *
+ * Every entry first takes its floor in cents; the leftover cents then go to
+ * the entries with the largest discarded fraction. Ties break on the entry's
+ * existing (a, m) sort position, so the result is deterministic.
+ *
+ * Mutates `mb` in place.
+ */
+function allocateCents(mb: ModelBreakdown[], total: number): void {
+  if (mb.length === 0) return;
+
+  const targetCents = Math.round(total * 100);
+  const floors = mb.map((e) => Math.floor(e.c * 100));
+
+  let assigned = 0;
+  for (const f of floors) assigned += f;
+
+  let leftover = targetCents - assigned;
+  if (leftover > 0) {
+    // Hand out the remaining cents to the largest discarded fractions first.
+    const order = mb
+      .map((e, idx) => ({ idx, frac: e.c * 100 - floors[idx]! }))
+      .sort((x, y) => (y.frac !== x.frac ? y.frac - x.frac : x.idx - y.idx));
+    for (const { idx } of order) {
+      if (leftover === 0) break;
+      floors[idx]!++;
+      leftover--;
+    }
+  } else if (leftover < 0) {
+    // Floating-point noise pushed the floors above the target; take cents
+    // back from the smallest fractions first.
+    const order = mb
+      .map((e, idx) => ({ idx, frac: e.c * 100 - floors[idx]! }))
+      .sort((x, y) => (x.frac !== y.frac ? x.frac - y.frac : x.idx - y.idx));
+    for (const { idx } of order) {
+      if (leftover === 0) break;
+      if (floors[idx]! === 0) continue;
+      floors[idx]!--;
+      leftover++;
+    }
+  }
+
+  for (let k = 0; k < mb.length; k++) mb[k]!.c = floors[k]! / 100;
 }
 
 /**

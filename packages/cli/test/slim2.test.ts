@@ -642,3 +642,86 @@ describe("slim() — sub-cent splits do not lose money", () => {
     assertInvariants(snap);
   });
 });
+
+describe("slim() — day cost matches the source exactly", () => {
+  /**
+   * The wire format stores 2dp on every mb entry. Rounding each entry
+   * independently and summing drifts from the real day cost by up to half a
+   * cent per entry, so cents are allocated by largest remainder instead.
+   */
+  it("does not drift when many entries each carry a half-cent fraction", () => {
+    const models = ["m1", "m2", "m3", "m4", "m5"];
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-04",
+          modelsUsed: models,
+          inputTokens: 500,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 500,
+          // 5 x $0.125 = $0.625. Rounding each to 2dp gives 5 x $0.13 =
+          // $0.65, which is 2.5 cents too much.
+          totalCost: 0.625,
+          metadata: { agents: ["claude"] },
+          modelBreakdowns: models.map((m) => ({
+            modelName: m,
+            inputTokens: 100,
+            outputTokens: 0,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            cost: 0.125,
+          })),
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    const day = snap.daily[0]!;
+    expect(day.c).toBe(0.63); // round2(0.625)
+    expect(day.mb.reduce((acc, e) => acc + e.c, 0)).toBeCloseTo(0.63, 10);
+    // Every entry is still a whole number of cents.
+    for (const e of day.mb) expect(Math.round(e.c * 100)).toBe(e.c * 100);
+    assertInvariants(snap);
+  });
+
+  it("keeps every entry at zero when the day cost is zero", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-05",
+          modelsUsed: ["local-model"],
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 150,
+          totalCost: 0,
+          metadata: { agents: ["pi"] },
+          modelBreakdowns: [
+            {
+              modelName: "local-model",
+              inputTokens: 100,
+              outputTokens: 50,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 0,
+              cost: 0,
+            },
+          ],
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, {
+      origin: "tool-collected",
+      generatedAt: FIXED_TS,
+    });
+    expect(snap.daily[0]!.c).toBe(0);
+    expect(snap.daily[0]!.mb[0]!.c).toBe(0);
+    assertInvariants(snap);
+  });
+});

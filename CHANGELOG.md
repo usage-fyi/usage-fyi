@@ -81,6 +81,12 @@ keep working.
   disappeared from the day total. Splits now distribute whole cents, with the
   remainder going to the alphabetically-first bucket. This affects the
   fallback attribution path only; the `--by-agent` path never splits.
+- **Day costs now match `ccusage` exactly.** The wire format stores 2dp on
+  every per-(agent, model) entry, and rounding each entry independently drifted
+  the day total by up to half a cent per entry. Cents are now allocated across
+  a day by largest remainder. On a 117-day history all 116 costed days match
+  `ccusage` to the cent, and the whole-history difference falls from $0.09 to
+  $0.01.
 - `pr-stats` no longer spawns a `ccusage` subprocess when there are no
   sessions to price.
 - README no longer claims `--json` makes no network call. It publishes, like
