@@ -4,7 +4,8 @@ import {
   CollectError,
   parseCollectOutput,
   normalizeModelId,
-  buildRateMap,
+  buildRateTable,
+  extractWarnings,
   makePricingFn,
 } from "../src/adapters/ccusage.js";
 import fixture from "./fixtures/ccusage-daily.json" with { type: "json" };
@@ -153,106 +154,237 @@ describe("normalizeModelId", () => {
   });
 });
 
-describe("buildRateMap", () => {
-  it("returns empty map for empty input", () => {
-    expect(buildRateMap([])).toEqual(new Map());
+describe("buildRateTable", () => {
+  const tok = (i: number, o: number, cc: number, cr: number) => ({
+    inputTokens: i,
+    outputTokens: o,
+    cacheCreationTokens: cc,
+    cacheReadTokens: cr,
   });
 
-  it("computes rate for a single-model row", () => {
-    const map = buildRateMap([
-      { modelsUsed: ["claude-opus-4-8"], totalTokens: 1000, totalCost: 1.0 },
-    ]);
-    expect(map.get("claude-opus-4-8")).toBeCloseTo(0.001, 10);
+  /**
+   * Rows priced exactly at $1/M in, $10/M out, $2/M cache-create,
+   * $0.1/M cache-read. The token mix is varied per row with a small
+   * deterministic PRNG: the rates are only identifiable when the four
+   * columns are not collinear, which is what real day-to-day usage looks
+   * like.
+   */
+  function pricedRows(n: number) {
+    const RI = 1 / 1e6, RO = 10 / 1e6, RCC = 2 / 1e6, RCR = 0.1 / 1e6;
+    let seed = 12345;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    return Array.from({ length: n }, () => {
+      const i = Math.round(500 + rnd() * 5000);
+      const o = Math.round(100 + rnd() * 3000);
+      const cc = Math.round(10 + rnd() * 2000);
+      const cr = Math.round(1000 + rnd() * 90000);
+      return {
+        totalTokens: i + o + cc + cr,
+        totalCost: i * RI + o * RO + cc * RCC + cr * RCR,
+        modelBreakdowns: [
+          {
+            modelName: "m",
+            inputTokens: i,
+            outputTokens: o,
+            cacheCreationTokens: cc,
+            cacheReadTokens: cr,
+            cost: i * RI + o * RO + cc * RCC + cr * RCR,
+          },
+        ],
+      };
+    });
+  }
+
+  it("recovers the true per-token-type rates from enough observations", () => {
+    const table = buildRateTable(pricedRows(12));
+    const entry = table.get("m");
+    expect(entry?.kind).toBe("modeled");
+    if (entry?.kind !== "modeled") throw new Error("expected a modeled rate");
+    expect(entry.rates.input * 1e6).toBeCloseTo(1, 6);
+    expect(entry.rates.output * 1e6).toBeCloseTo(10, 6);
+    expect(entry.rates.cacheCreation * 1e6).toBeCloseTo(2, 6);
+    expect(entry.rates.cacheRead * 1e6).toBeCloseTo(0.1, 6);
   });
 
-  it("assigns blended row rate to each model in a multi-model row", () => {
-    const map = buildRateMap([
-      {
-        modelsUsed: ["model-a", "model-b"],
-        totalTokens: 1000,
-        totalCost: 2.0,
-      },
-    ]);
-    // Both models get the same blended rate 2.0/1000 = 0.002
-    expect(map.get("model-a")).toBeCloseTo(0.002, 10);
-    expect(map.get("model-b")).toBeCloseTo(0.002, 10);
+  it("falls back to a blended rate when there is too little history", () => {
+    const table = buildRateTable(pricedRows(3));
+    expect(table.get("m")?.kind).toBe("blended");
+  });
+
+  it("never emits a negative rate", () => {
+    // Input and cache-read move together here, which makes an unconstrained
+    // fit want a negative input rate.
+    const rows = Array.from({ length: 10 }, (_, k) => {
+      const i = 1000 * (k + 1);
+      const cr = 100_000 * (k + 1);
+      return {
+        totalTokens: i + cr,
+        totalCost: 0.01 * (k + 1),
+        modelBreakdowns: [
+          {
+            modelName: "m",
+            inputTokens: i,
+            outputTokens: 0,
+            cacheCreationTokens: 0,
+            cacheReadTokens: cr,
+            cost: 0.01 * (k + 1),
+          },
+        ],
+      };
+    });
+    const entry = buildRateTable(rows).get("m");
+    if (entry?.kind !== "modeled") throw new Error("expected a modeled rate");
+    for (const r of Object.values(entry.rates)) expect(r).toBeGreaterThanOrEqual(0);
   });
 
   it("normalizes dated model ids before storing", () => {
-    const map = buildRateMap([
-      {
-        modelsUsed: ["claude-haiku-4-5-20251001"],
-        totalTokens: 500,
-        totalCost: 0.05,
-      },
-    ]);
-    expect(map.has("claude-haiku-4-5")).toBe(true);
-    expect(map.has("claude-haiku-4-5-20251001")).toBe(false);
+    const rows = pricedRows(12).map((r) => ({
+      ...r,
+      modelBreakdowns: r.modelBreakdowns.map((b) => ({
+        ...b,
+        modelName: "claude-haiku-4-5-20251001",
+      })),
+    }));
+    const table = buildRateTable(rows);
+    expect(table.has("claude-haiku-4-5")).toBe(true);
+    expect(table.has("claude-haiku-4-5-20251001")).toBe(false);
   });
 
-  it("computes weighted average rate across multiple rows for same model", () => {
-    // Row 1: 1000 tokens at $1 → rate 0.001
-    // Row 2: 2000 tokens at $4 → rate 0.002
-    // Weighted avg: (1+4)/(1000+2000) = 5/3000 ≈ 0.001667
-    const map = buildRateMap([
-      { modelsUsed: ["m"], totalTokens: 1000, totalCost: 1.0 },
-      { modelsUsed: ["m"], totalTokens: 2000, totalCost: 4.0 },
+  it("falls back to the day blended rate when no modelBreakdowns are present", () => {
+    const table = buildRateTable([
+      { modelsUsed: ["model-a", "model-b"], totalTokens: 1000, totalCost: 2.0 },
     ]);
-    expect(map.get("m")).toBeCloseTo(5 / 3000, 10);
+    expect(table.get("model-a")).toEqual({ kind: "blended", perToken: 0.002 });
+    expect(table.get("model-b")).toEqual({ kind: "blended", perToken: 0.002 });
   });
 
   it("skips rows with zero totalTokens", () => {
-    const map = buildRateMap([
+    const table = buildRateTable([
       { modelsUsed: ["m"], totalTokens: 0, totalCost: 0 },
     ]);
-    expect(map.has("m")).toBe(false);
+    expect(table.has("m")).toBe(false);
   });
 
-  it("derives rates from the real fixture data", () => {
-    const map = buildRateMap(
-      fixture.daily as Array<{
-        modelsUsed?: string[];
-        totalTokens: number;
-        totalCost: number;
-      }>,
+  it("derives usable rates from the real fixture data", () => {
+    const table = buildRateTable(
+      fixture.daily as Parameters<typeof buildRateTable>[0],
     );
-    // The fixture contains claude-opus-4-6 and other models; map should be non-empty
-    expect(map.size).toBeGreaterThan(0);
-    // All rates must be positive finite numbers
-    for (const rate of map.values()) {
-      expect(rate).toBeGreaterThan(0);
-      expect(Number.isFinite(rate)).toBe(true);
+    expect(table.size).toBeGreaterThan(0);
+    for (const entry of table.values()) {
+      if (entry.kind === "blended") {
+        expect(entry.perToken).toBeGreaterThan(0);
+        expect(Number.isFinite(entry.perToken)).toBe(true);
+      } else {
+        for (const r of Object.values(entry.rates)) {
+          expect(r).toBeGreaterThanOrEqual(0);
+          expect(Number.isFinite(r)).toBe(true);
+        }
+      }
     }
+  });
+
+  it("prices a cache-heavy window far below a blended rate", () => {
+    const table = buildRateTable(pricedRows(12));
+    const fn = makePricingFn(table);
+    const cacheHeavy = tok(0, 0, 0, 1_000_000);
+    const modeled = fn("m", cacheHeavy).usd!;
+    // The blended scalar over this history is dominated by cache reads but
+    // still averages in $10/M output, so it over-charges pure cache reads.
+    const blendedTable = buildRateTable(pricedRows(3));
+    const blended = makePricingFn(blendedTable)("m", cacheHeavy).usd!;
+    expect(modeled).toBeCloseTo(0.1, 6);
+    expect(blended).toBeGreaterThan(modeled);
   });
 });
 
 describe("makePricingFn", () => {
-  it("returns unknown-model for a model not in the rate map", () => {
+  const tok = (i: number, o: number, cc: number, cr: number) => ({
+    inputTokens: i,
+    outputTokens: o,
+    cacheCreationTokens: cc,
+    cacheReadTokens: cr,
+  });
+
+  it("returns unknown-model for a model not in the table", () => {
     const fn = makePricingFn(new Map());
-    expect(fn("unknown-model", 1000)).toEqual({
+    expect(fn("nope", tok(1000, 0, 0, 0))).toEqual({
       usd: null,
       flag: "unknown-model",
     });
   });
 
-  it("returns blended-rate and computed USD for a known model", () => {
-    const fn = makePricingFn(new Map([["claude-opus-4-8", 0.001]]));
-    expect(fn("claude-opus-4-8", 1000)).toEqual({
+  it("charges each token type at its own rate for a modeled entry", () => {
+    const fn = makePricingFn(
+      new Map([
+        [
+          "m",
+          {
+            kind: "modeled" as const,
+            rates: {
+              input: 1 / 1e6,
+              output: 10 / 1e6,
+              cacheCreation: 2 / 1e6,
+              cacheRead: 0.1 / 1e6,
+            },
+          },
+        ],
+      ]),
+    );
+    const r = fn("m", tok(1e6, 1e6, 1e6, 1e6));
+    expect(r.usd).toBeCloseTo(13.1, 9);
+    expect(r.flag).toBe("modeled-rate");
+  });
+
+  it("returns blended-rate and computed USD for a blended entry", () => {
+    const fn = makePricingFn(
+      new Map([["claude-opus-4-8", { kind: "blended" as const, perToken: 0.001 }]]),
+    );
+    expect(fn("claude-opus-4-8", tok(1000, 0, 0, 0))).toEqual({
       usd: 1.0,
       flag: "blended-rate",
     });
   });
 
   it("normalizes a dated suffix before lookup", () => {
-    const fn = makePricingFn(new Map([["claude-opus-4-8", 0.002]]));
-    const result = fn("claude-opus-4-8-20260301", 500);
+    const fn = makePricingFn(
+      new Map([["claude-opus-4-8", { kind: "blended" as const, perToken: 0.002 }]]),
+    );
+    const result = fn("claude-opus-4-8-20260301", tok(500, 0, 0, 0));
     expect(result.usd).toBeCloseTo(1.0, 10);
     expect(result.flag).toBe("blended-rate");
   });
 
-  it("returns 0 USD for 0 tokens even for an unknown model", () => {
-    // 0 tokens → rate doesn't matter, cost is $0
-    const fn = makePricingFn(new Map([["m", 0.001]]));
-    expect(fn("m", 0)).toEqual({ usd: 0, flag: "blended-rate" });
+  it("returns 0 USD for 0 tokens of a known model", () => {
+    const fn = makePricingFn(
+      new Map([["m", { kind: "blended" as const, perToken: 0.001 }]]),
+    );
+    expect(fn("m", tok(0, 0, 0, 0))).toEqual({ usd: 0, flag: "blended-rate" });
+  });
+});
+
+describe("extractWarnings", () => {
+  it("picks out ccusage's pricing warnings", () => {
+    const stderr = [
+      "Loading usage data...",
+      "WARN  Missing pricing for brand-new-model; cost excludes this model.",
+      "",
+      "WARN Failed to fetch LiteLLM pricing (timeout); using embedded pricing.",
+    ].join("\n");
+    expect(extractWarnings(stderr)).toEqual([
+      "WARN  Missing pricing for brand-new-model; cost excludes this model.",
+      "WARN Failed to fetch LiteLLM pricing (timeout); using embedded pricing.",
+    ]);
+  });
+
+  it("returns nothing for clean stderr", () => {
+    expect(extractWarnings("")).toEqual([]);
+    expect(extractWarnings("Loading usage data...\n")).toEqual([]);
+  });
+
+  it("does not match a word merely containing warn", () => {
+    expect(extractWarnings("forewarned is forearmed")).toEqual([]);
   });
 });

@@ -168,11 +168,22 @@ export function aggregate(
 
 // ─── Token-windowing types ───────────────────────────────────────────────────
 
+/**
+ * How a cost estimate was produced. Mirrors PricingFlag in the ccusage
+ * adapter; redeclared here so the analyzer stays free of adapter imports.
+ */
+export type PricingFlag = "modeled-rate" | "blended-rate" | "unknown-model";
+
 /** Synchronous pricing function injected by the IO layer. */
 type PricingFn = (
   model: string,
-  totalTokens: number,
-) => { usd: number | null; flag?: "unknown-model" | "blended-rate" };
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  },
+) => { usd: number | null; flag?: PricingFlag };
 
 export interface PRInput {
   prUrl: string;
@@ -206,7 +217,7 @@ export interface PRWindowResult {
   /** Estimated cost in USD; null when pricingFn unavailable or model unknown. */
   estimatedCostUsd: number | null;
   /** "blended-rate" when cost is derived; "unknown-model" when model not in rate map. */
-  pricingFlag?: "unknown-model" | "blended-rate";
+  pricingFlag?: PricingFlag;
 }
 
 export interface SessionStats {
@@ -224,7 +235,7 @@ export interface SessionStats {
   /** Estimated cost in USD; null when pricingFn unavailable or any model unknown. */
   estimatedCostUsd: number | null;
   /** "blended-rate" when cost is derived; "unknown-model" when any model not in rate map. */
-  pricingFlag?: "unknown-model" | "blended-rate";
+  pricingFlag?: PricingFlag;
 }
 
 export interface WindowSessionResult {
@@ -254,7 +265,7 @@ export interface ProjectTokenStats {
   /** Sum of all session costs; null when pricingFn unavailable or any model unknown. */
   estimatedCostUsd: number | null;
   /** "blended-rate" when cost is derived; "unknown-model" when any model not in rate map. */
-  pricingFlag?: "unknown-model" | "blended-rate";
+  pricingFlag?: PricingFlag;
 }
 
 // ─── Token-windowing helpers ─────────────────────────────────────────────────
@@ -317,25 +328,62 @@ function calcCacheHitRatio(b: TokenBreakdown): number | null {
 }
 
 /**
- * Compute the estimated cost for a set of models and a total token count.
+ * Compute the estimated cost of a set of token events.
  *
- * When multiple models are present their per-model costs are averaged
- * (equal-split approximation — per-model token counts are not tracked in
- * PRWindowResult). Returns null with "unknown-model" if any model is absent
- * from the rate map, or if no models are provided.
+ * Events are grouped by model and each group is priced against its own
+ * per-token-type breakdown, so a window made mostly of cheap cache reads is
+ * not charged as if it were expensive output. Returns null with
+ * "unknown-model" if any model present has no derivable rate, or if there
+ * are tokens but no model attached to them.
+ *
+ * The reported flag is the weakest one across the models involved:
+ * "unknown-model" beats "blended-rate" beats "modeled-rate", so a caller can
+ * never read a confident flag off a partly-guessed number.
  */
 function computeCost(
-  models: string[],
-  totalTokens: number,
+  events: TokenEvent[],
   pricingFn: PricingFn,
-): { usd: number | null; flag?: "unknown-model" | "blended-rate" } {
-  if (totalTokens === 0) return { usd: 0 };
-  if (models.length === 0) return { usd: null, flag: "unknown-model" };
-  const results = models.map((m) => pricingFn(m, totalTokens));
-  if (results.some((r) => r.usd === null))
+): { usd: number | null; flag?: PricingFlag } {
+  const byModel = new Map<string, TokenBreakdown>();
+  let anyTokens = false;
+  let unattributed = 0;
+
+  for (const ev of events) {
+    const t = ev.tokens;
+    const total =
+      t.inputTokens + t.outputTokens + t.cacheCreationTokens + t.cacheReadTokens;
+    if (total === 0) continue;
+    anyTokens = true;
+    if (ev.model === null || ev.model === "") {
+      unattributed += total;
+      continue;
+    }
+    const acc = byModel.get(ev.model);
+    if (acc) {
+      acc.inputTokens += t.inputTokens;
+      acc.outputTokens += t.outputTokens;
+      acc.cacheCreationTokens += t.cacheCreationTokens;
+      acc.cacheReadTokens += t.cacheReadTokens;
+      acc.reasoningTokens += t.reasoningTokens;
+      acc.totalTokens += t.totalTokens;
+    } else {
+      byModel.set(ev.model, { ...t });
+    }
+  }
+
+  if (!anyTokens) return { usd: 0 };
+  if (unattributed > 0 || byModel.size === 0)
     return { usd: null, flag: "unknown-model" };
-  const avgUsd = results.reduce((s, r) => s + r.usd!, 0) / results.length;
-  return { usd: avgUsd, flag: "blended-rate" };
+
+  let usd = 0;
+  let sawBlended = false;
+  for (const [model, tokens] of byModel) {
+    const r = pricingFn(model, tokens);
+    if (r.usd === null) return { usd: null, flag: "unknown-model" };
+    if (r.flag === "blended-rate") sawBlended = true;
+    usd += r.usd;
+  }
+  return { usd, flag: sawBlended ? "blended-rate" : "modeled-rate" };
 }
 
 // ─── windowSession() ────────────────────────────────────────────────────────
@@ -380,7 +428,7 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
     attributed: "windowed" | "session-only" | "approximate",
     costResult: {
       usd: number | null;
-      flag?: "unknown-model" | "blended-rate";
+      flag?: PricingFlag;
     } = { usd: null },
   ): SessionStats => ({
     sessionId,
@@ -402,7 +450,7 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
   });
 
   const sessionCostResult = pricingFn
-    ? computeCost(sessionModels, sessionBreakdown.totalTokens, pricingFn)
+    ? computeCost(tokens, pricingFn)
     : { usd: null };
 
   // Dry session — no PRs; all tokens are dry spend.
@@ -505,14 +553,15 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
     const msToPR = groupTs - windowStartMs;
     const msFromPrevPR = prevPrMs !== null ? groupTs - prevPrMs : null;
 
-    // Cost for the full window; scale by 1/groupSize for same-timestamp PRs.
-    const windowTokensForCost =
-      groupSize === 1
-        ? windowBreakdown.totalTokens
-        : windowBreakdown.totalTokens / groupSize;
-    const windowCost = pricingFn
-      ? computeCost(windowModels, windowTokensForCost, pricingFn)
-      : { usd: null };
+    // Cost of the whole window, priced per model from its own token mix,
+    // then divided evenly across PRs that share this timestamp.
+    const windowCostFull = pricingFn
+      ? computeCost(windowEvents, pricingFn)
+      : { usd: null as number | null };
+    const windowCost =
+      windowCostFull.usd === null || groupSize === 1
+        ? windowCostFull
+        : { ...windowCostFull, usd: windowCostFull.usd / groupSize };
 
     for (const pr of group) {
       perPR.push({
@@ -556,30 +605,32 @@ export function windowSession(input: WindowSessionInput): WindowSessionResult {
   // Propagate null if any component is unavailable or unknown.
   let windowedSessionCost: {
     usd: number | null;
-    flag?: "unknown-model" | "blended-rate";
+    flag?: PricingFlag;
   } = { usd: null };
   if (pricingFn) {
     let totalUsd = 0;
     let anyNull = false;
+    let sawBlended = false;
     for (const pr of perPR) {
       if (pr.estimatedCostUsd === null) {
         anyNull = true;
         break;
       }
+      if (pr.pricingFlag === "blended-rate") sawBlended = true;
       totalUsd += pr.estimatedCostUsd;
     }
     if (!anyNull) {
-      const overheadModels = uniqueModels(overheadEvents);
-      const oc = computeCost(overheadModels, overhead.totalTokens, pricingFn);
+      const oc = computeCost(overheadEvents, pricingFn);
       if (oc.usd === null) {
         anyNull = true;
       } else {
+        if (oc.flag === "blended-rate") sawBlended = true;
         totalUsd += oc.usd;
       }
     }
     windowedSessionCost = anyNull
       ? { usd: null, flag: "unknown-model" }
-      : { usd: totalUsd, flag: "blended-rate" };
+      : { usd: totalUsd, flag: sawBlended ? "blended-rate" : "modeled-rate" };
   }
 
   return {
@@ -616,6 +667,8 @@ export function aggregateTokensByProject(
     /** True once any session's pricingFlag is set (pricing was attempted). */
     pricingAttempted: boolean;
     anyUnknownModel: boolean;
+    /** True once any session had to fall back to a blended $/token rate. */
+    anyBlendedRate: boolean;
   }
 
   const byProject = new Map<string, Acc>();
@@ -632,6 +685,7 @@ export function aggregateTokensByProject(
         estimatedCostUsd: 0,
         pricingAttempted: false,
         anyUnknownModel: false,
+        anyBlendedRate: false,
       };
       byProject.set(project, acc);
     }
@@ -666,6 +720,7 @@ export function aggregateTokensByProject(
 
     // Accumulate session cost. Null-propagate on unknown model.
     if (session.pricingFlag !== undefined) acc.pricingAttempted = true;
+    if (session.pricingFlag === "blended-rate") acc.anyBlendedRate = true;
     if (session.pricingFlag === "unknown-model") {
       acc.anyUnknownModel = true;
     } else if (
@@ -696,11 +751,15 @@ export function aggregateTokensByProject(
       : acc.anyUnknownModel
         ? null
         : acc.estimatedCostUsd;
-    const projectPricingFlag = !acc.pricingAttempted
+    // Report the weakest provenance across the project's sessions, so a
+    // project total never claims to be better sourced than its worst input.
+    const projectPricingFlag: PricingFlag | undefined = !acc.pricingAttempted
       ? undefined
       : acc.anyUnknownModel
-        ? ("unknown-model" as const)
-        : ("blended-rate" as const);
+        ? "unknown-model"
+        : acc.anyBlendedRate
+          ? "blended-rate"
+          : "modeled-rate";
 
     result[project] = {
       productiveTokens,

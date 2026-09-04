@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { HelpRequestedError, LaterPhaseError, parseArgs } from "../src/args";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import {
+  HelpRequestedError,
+  LaterPhaseError,
+  VersionRequestedError,
+  parseArgs,
+} from "../src/args";
 import { DEFAULT_SOURCE } from "../src/adapters/registry";
 
 describe("parseArgs — defaults", () => {
@@ -156,5 +163,24 @@ describe("parseArgs — pr-stats subcommand", () => {
       err = e;
     }
     expect((err as HelpRequestedError).text).toContain("pr-stats");
+  });
+});
+
+describe("CLI_VERSION", () => {
+  it("matches the version in package.json", async () => {
+    const pkg = JSON.parse(
+      await readFile(
+        fileURLToPath(new URL("../package.json", import.meta.url)),
+        "utf8",
+      ),
+    ) as { version: string };
+    let reported: string | null = null;
+    try {
+      parseArgs(["--version"]);
+    } catch (err) {
+      if (err instanceof VersionRequestedError) reported = err.version;
+      else throw err;
+    }
+    expect(reported).toBe(pkg.version);
   });
 });

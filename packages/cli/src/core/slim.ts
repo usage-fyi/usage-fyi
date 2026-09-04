@@ -30,6 +30,21 @@ interface RawDailyEntry {
    * Present in current ccusage; absent in older fixtures.
    */
   modelBreakdowns?: RawModelBreakdown[];
+  /**
+   * Per-(date, agent) breakdown emitted by `ccusage daily --json --by-agent`
+   * (ccusage >= 20.0.16). This is EXACT attribution straight from ccusage:
+   * each agent carries its own modelBreakdowns[] and those numbers sum back
+   * to the day totals. When present it supersedes every heuristic below --
+   * no per-agent subprocess probing, no even-splitting of ambiguous
+   * (date, model) pairs, no name-prefix inference.
+   */
+  agents?: RawAgentBreakdown[];
+}
+
+/** One agent's slice of a day, from `daily --json --by-agent`. */
+interface RawAgentBreakdown {
+  agent: string;
+  modelBreakdowns?: RawModelBreakdown[];
 }
 
 interface RawModelBreakdown {
@@ -386,6 +401,10 @@ function buildDailyEntry(
     };
   }
 
+  // Fast path: ccusage told us the exact per-agent split. No heuristics.
+  const exact = buildMbFromAgents(r);
+  if (exact) return finalizeDay(date, exact);
+
   // Build per-(model) numeric breakdown. Prefer ccusage's own
   // modelBreakdowns[] — it always sums to the day totals exactly.
   const perModel: {
@@ -486,6 +505,66 @@ function buildDailyEntry(
     }
   }
 
+  return finalizeDay(date, mb);
+}
+
+/**
+ * Build mb[] straight from ccusage's own per-agent breakdown
+ * (`daily --json --by-agent`). Returns null when the payload is absent or
+ * carries no model rows, so the caller falls back to the heuristic path.
+ *
+ * Entries are merged by (agent, model): ccusage emits one modelBreakdowns[]
+ * row per model per agent, but merging keeps us robust to a future shape
+ * that splits a model across several rows.
+ */
+function buildMbFromAgents(r: RawDailyEntry): ModelBreakdown[] | null {
+  if (!Array.isArray(r.agents) || r.agents.length === 0) return null;
+
+  const merged = new Map<string, ModelBreakdown>();
+  for (const ag of r.agents) {
+    const agent = typeof ag?.agent === "string" ? ag.agent : "";
+    if (agent === "") continue;
+    for (const b of ag.modelBreakdowns ?? []) {
+      const model = typeof b?.modelName === "string" ? b.modelName : "";
+      if (model === "") continue;
+      const i = b.inputTokens ?? 0;
+      const o = b.outputTokens ?? 0;
+      const cc = b.cacheCreationTokens ?? 0;
+      const cr = b.cacheReadTokens ?? 0;
+      const key = `${agent}\x00${model}`;
+      const prev = merged.get(key);
+      if (prev) {
+        prev.i += i;
+        prev.o += o;
+        prev.cc += cc;
+        prev.cr += cr;
+        prev.t += b.totalTokens ?? i + o + cc + cr;
+        prev.c += b.cost ?? 0;
+      } else {
+        merged.set(key, {
+          a: agent,
+          m: model,
+          i,
+          o,
+          cc,
+          cr,
+          t: b.totalTokens ?? i + o + cc + cr,
+          c: b.cost ?? 0,
+        });
+      }
+    }
+  }
+
+  if (merged.size === 0) return null;
+  return [...merged.values()].map((e) => ({ ...e, c: round2(e.c) }));
+}
+
+/**
+ * Shared finalization for a day's mb[]: sort deterministically, then
+ * re-derive the day-level totals and the m/a arrays from it so the five
+ * server-side invariants hold by construction.
+ */
+function finalizeDay(date: string, mb: ModelBreakdown[]): DailyEntry {
   // Sort mb[] ASC by (a, m) for determinism.
   mb.sort((x, y) =>
     x.a < y.a ? -1 : x.a > y.a ? 1 : x.m < y.m ? -1 : x.m > y.m ? 1 : 0,

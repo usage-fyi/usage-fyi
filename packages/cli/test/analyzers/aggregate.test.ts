@@ -12,6 +12,7 @@ import {
   type AggregateSessionMeta,
   type WindowSessionInput,
   type WindowSessionResult,
+  type PricingFlag,
 } from "../../src/analyzers/index.js";
 import { type TokenEvent } from "../../src/analyzers/sources/tokenTypes.js";
 import { scanClaudeCodeSession } from "../../src/analyzers/sources/claudeCode.js";
@@ -914,12 +915,142 @@ describe("aggregateTokensByProject() — multiple projects", () => {
 /** Synthetic pricing fn: 0.001 $/token for "claude-opus-4-8", unknown otherwise. */
 function mockPricingFn(
   model: string,
-  totalTokens: number,
-): { usd: number | null; flag?: "unknown-model" | "blended-rate" } {
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  },
+): { usd: number | null; flag?: PricingFlag } {
+  const totalTokens =
+    tokens.inputTokens +
+    tokens.outputTokens +
+    tokens.cacheCreationTokens +
+    tokens.cacheReadTokens;
   if (model === "claude-opus-4-8")
     return { usd: 0.001 * totalTokens, flag: "blended-rate" };
   return { usd: null, flag: "unknown-model" };
 }
+
+/** Synthetic pricing fn charging each token type its own rate. */
+function typedPricingFn(
+  model: string,
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  },
+): { usd: number | null; flag?: PricingFlag } {
+  if (model !== "claude-opus-4-8") return { usd: null, flag: "unknown-model" };
+  return {
+    usd:
+      tokens.inputTokens * 1e-6 +
+      tokens.outputTokens * 10e-6 +
+      tokens.cacheCreationTokens * 2e-6 +
+      tokens.cacheReadTokens * 0.1e-6,
+    flag: "modeled-rate",
+  };
+}
+
+describe("windowSession() — per-token-type pricing", () => {
+  const prs = [
+    {
+      prUrl: "https://github.com/a/b/pull/1",
+      prTimestamp: "2026-06-01T01:00:00.000Z",
+    },
+  ];
+
+  /** Same total tokens, opposite mix: all output vs all cache-read. */
+  const outputHeavy = makeToken("2026-06-01T00:30:00.000Z", {
+    tokens: {
+      inputTokens: 0,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 1_000_000,
+    },
+  });
+  const cacheHeavy = makeToken("2026-06-01T00:30:00.000Z", {
+    tokens: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 1_000_000,
+      cacheCreationTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 1_000_000,
+    },
+  });
+
+  it("charges an output-heavy window far more than a cache-heavy one", () => {
+    const out = windowSession(
+      makeInput({ tokens: [outputHeavy], prs, pricingFn: typedPricingFn }),
+    );
+    const cache = windowSession(
+      makeInput({ tokens: [cacheHeavy], prs, pricingFn: typedPricingFn }),
+    );
+    expect(out.perPR[0]!.estimatedCostUsd).toBeCloseTo(10, 9);
+    expect(cache.perPR[0]!.estimatedCostUsd).toBeCloseTo(0.1, 9);
+    // The old blended-scalar model priced these two identically.
+    const blendedOut = windowSession(
+      makeInput({ tokens: [outputHeavy], prs, pricingFn: mockPricingFn }),
+    );
+    const blendedCache = windowSession(
+      makeInput({ tokens: [cacheHeavy], prs, pricingFn: mockPricingFn }),
+    );
+    expect(blendedOut.perPR[0]!.estimatedCostUsd).toBe(
+      blendedCache.perPR[0]!.estimatedCostUsd,
+    );
+  });
+
+  it("reports the modeled-rate flag when every model was modeled", () => {
+    const r = windowSession(
+      makeInput({ tokens: [outputHeavy], prs, pricingFn: typedPricingFn }),
+    );
+    expect(r.perPR[0]!.pricingFlag).toBe("modeled-rate");
+    expect(r.session.pricingFlag).toBe("modeled-rate");
+  });
+
+  it("prices each model in a mixed window against its own token mix", () => {
+    const other = makeToken("2026-06-01T00:40:00.000Z", {
+      model: "other-model",
+    });
+    const r = windowSession(
+      makeInput({
+        tokens: [outputHeavy, other],
+        prs,
+        pricingFn: typedPricingFn,
+      }),
+    );
+    // "other-model" has no rate, so the whole window is unpriceable.
+    expect(r.perPR[0]!.estimatedCostUsd).toBeNull();
+    expect(r.perPR[0]!.pricingFlag).toBe("unknown-model");
+  });
+
+  it("degrades the flag to blended-rate when any model fell back", () => {
+    const mixed = (
+      model: string,
+      tokens: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheCreationTokens: number;
+        cacheReadTokens: number;
+      },
+    ): { usd: number | null; flag?: PricingFlag } =>
+      model === "claude-opus-4-8"
+        ? typedPricingFn(model, tokens)
+        : { usd: 1, flag: "blended-rate" };
+
+    const other = makeToken("2026-06-01T00:40:00.000Z", {
+      model: "other-model",
+    });
+    const r = windowSession(
+      makeInput({ tokens: [outputHeavy, other], prs, pricingFn: mixed }),
+    );
+    expect(r.perPR[0]!.pricingFlag).toBe("blended-rate");
+  });
+});
 
 describe("windowSession() — pricing", () => {
   it("populates estimatedCostUsd on a PR window with a known model", () => {
@@ -1138,13 +1269,23 @@ describe("aggregateTokensByProject() — pricing", () => {
 /** Minimal pricing fn: returns cost for known models, unknown-model for others. */
 function fixturePricingFn(
   model: string,
-  totalTokens: number,
-): { usd: number | null; flag?: "unknown-model" | "blended-rate" } {
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  },
+): { usd: number | null; flag?: PricingFlag } {
   const knownModels = new Set([
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
     "claude-opus-4-8",
   ]);
+  const totalTokens =
+    tokens.inputTokens +
+    tokens.outputTokens +
+    tokens.cacheCreationTokens +
+    tokens.cacheReadTokens;
   if (knownModels.has(model))
     return { usd: 0.001 * totalTokens, flag: "blended-rate" };
   return { usd: null, flag: "unknown-model" };

@@ -26,7 +26,7 @@ describe("analyzePRStats", () => {
       claudeProjectsDir: "/nonexistent/claude",
       codexSessionsDir: "/nonexistent/codex",
     });
-    expect(report.schema).toBe("pr-stats/2");
+    expect(report.schema).toBe("pr-stats/3");
     expect(report.events).toHaveLength(0);
     expect(report.bySession).toHaveLength(0);
     expect(Object.keys(report.byProject)).toHaveLength(0);
@@ -46,7 +46,7 @@ describe("analyzePRStats", () => {
     for (const ev of report.events) {
       expect(ev.project).toBeTruthy();
       expect(ev.prUrl).toMatch(/^https:\/\/github\.com\/.*\/pull\/\d+$/);
-      // pr-stats/2 token fields should be present
+      // pr-stats/3 token fields should be present
       expect(ev.tokens).toBeDefined();
       expect(["windowed", "session-only", "approximate"]).toContain(
         ev.tokensAttributed,
@@ -71,7 +71,7 @@ describe("analyzePRStats", () => {
       expect(typeof stats.prCount).toBe("number");
       expect(typeof stats.sessionCount).toBe("number");
       expect(typeof stats.sessionsWithNoPR).toBe("number");
-      // pr-stats/2 token fields
+      // pr-stats/3 token fields
       expect(stats.productiveTokens).toBeDefined();
       expect(stats.dryTokens).toBeDefined();
       expect(stats.totalTokens).toBeDefined();
@@ -130,7 +130,7 @@ describe("formatPRStatsTable", () => {
 
   it("renders a message when there are no projects", () => {
     const table = formatPRStatsTable({
-      schema: "pr-stats/2",
+      schema: "pr-stats/3",
       generatedAt: "2026-06-01T00:00:00Z",
       events: [],
       bySession: [],
@@ -141,7 +141,7 @@ describe("formatPRStatsTable", () => {
 
   it("renders columns for project, PRs, median and p90", () => {
     const table = formatPRStatsTable({
-      schema: "pr-stats/2",
+      schema: "pr-stats/3",
       generatedAt: "2026-06-01T00:00:00Z",
       events: [
         {
@@ -195,7 +195,7 @@ describe("formatPRStatsTable", () => {
 
   it("shows dash for null percentiles", () => {
     const table = formatPRStatsTable({
-      schema: "pr-stats/2",
+      schema: "pr-stats/3",
       generatedAt: "2026-06-01T00:00:00Z",
       events: [],
       bySession: [],
@@ -265,7 +265,7 @@ describe("reconciliation — token fixture totals match ccusage-derived expectat
       gitRootResolver: async (cwd) => cwd,
     });
 
-    expect(report.schema).toBe("pr-stats/2");
+    expect(report.schema).toBe("pr-stats/3");
 
     // Verify stdout parsability: the report object itself is the parsed form;
     // round-trip through JSON to confirm no unserializable values.

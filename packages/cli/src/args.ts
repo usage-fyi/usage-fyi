@@ -42,7 +42,11 @@ export class VersionRequestedError extends Error {
   }
 }
 
-const CLI_VERSION = "0.1.2";
+/**
+ * Printed by `--version`. Must match the `version` field in package.json --
+ * a test in test/args.test.ts fails the build if the two ever drift.
+ */
+const CLI_VERSION = "0.2.0";
 
 export const HELP_TEXT = `\
 usage-fyi — publish your AI coding-agent usage as a shareable card

@@ -13,6 +13,7 @@ import {
   type SessionStats,
   type ProjectTokenStats,
   type WindowSessionResult,
+  type PricingFlag,
 } from "./aggregate.js";
 import { type TokenBreakdown, zeroBreakdown } from "./sources/tokenTypes.js";
 import { loadPricingFn } from "../adapters/ccusage.js";
@@ -33,11 +34,16 @@ export interface PREvent {
   sessionEnd: string; // ISO 8601
   msToFirstPR: number;
   msSessionTotal: number;
-  // Token attribution fields (pr-stats/2)
+  // Token attribution fields (pr-stats/3)
   tokens: TokenBreakdown;
   tokensAttributed: "windowed" | "session-only" | "approximate";
   models: string[];
   estimatedCostUsd: number | null;
+  /**
+   * How `estimatedCostUsd` was derived, so a consumer can tell a per-token-type
+   * estimate from a coarse blended one. Absent when there is no cost to price.
+   */
+  pricingFlag?: PricingFlag;
   /** ms from the immediately preceding PR; null for the first PR in the session. */
   msFromPrevPR: number | null;
 }
@@ -48,7 +54,7 @@ export interface PRProjectStats {
   sessionsWithNoPR: number;
   medianMsToFirstPR: number | null;
   p90MsToFirstPR: number | null;
-  // Token efficiency fields (pr-stats/2)
+  // Token efficiency fields (pr-stats/3)
   productiveTokens: TokenBreakdown;
   dryTokens: TokenBreakdown;
   overheadTokens: TokenBreakdown;
@@ -65,11 +71,11 @@ export interface PRProjectStats {
   /** outputTokens / totalTokens; null if totalTokens = 0. */
   outputShare: number | null;
   estimatedCostUsd: number | null;
-  pricingFlag?: "unknown-model" | "blended-rate";
+  pricingFlag?: PricingFlag;
 }
 
 export interface PRStatsReport {
-  schema: "pr-stats/2";
+  schema: "pr-stats/3";
   generatedAt: string;
   events: PREvent[];
   bySession: SessionStats[];
@@ -368,8 +374,6 @@ export async function analyzePRStats(
   const codexDir = opts.codexSessionsDir ?? join(home, ".codex", "sessions");
   const gitRootResolver = opts.gitRootResolver ?? defaultGitRootResolver;
 
-  const pricingFn = await loadPricingFn();
-
   const sessionDataList: SessionData[] = [];
 
   // ─── Claude Code ──────────────────────────────────────────────────────────
@@ -411,6 +415,11 @@ export async function analyzePRStats(
   }
 
   // ─── Window sessions ──────────────────────────────────────────────────────
+  // Pricing costs a ccusage subprocess, so only pay for it once we know
+  // there is something to price.
+  const needsPricing = sessionDataList.some((sd) => sd.tokens.length > 0);
+  const pricingFn = needsPricing ? await loadPricingFn() : undefined;
+
   const windowResults: WindowSessionResult[] = sessionDataList.map((sd) =>
     windowSession({
       sessionId: sd.sessionId,
@@ -422,7 +431,7 @@ export async function analyzePRStats(
         prTimestamp: e.timestamp,
       })),
       tokens: sd.tokens,
-      pricingFn,
+      ...(pricingFn ? { pricingFn } : {}),
     }),
   );
 
@@ -475,6 +484,9 @@ export async function analyzePRStats(
         tokensAttributed: w?.tokensAttributed ?? "session-only",
         models: w?.models ?? [],
         estimatedCostUsd: w?.estimatedCostUsd ?? null,
+        ...(w?.pricingFlag !== undefined
+          ? { pricingFlag: w.pricingFlag }
+          : {}),
         msFromPrevPR: w?.msFromPrevPR ?? null,
       });
     }
@@ -585,7 +597,7 @@ export async function analyzePRStats(
   }
 
   return {
-    schema: "pr-stats/2",
+    schema: "pr-stats/3",
     generatedAt: new Date().toISOString(),
     events,
     bySession,

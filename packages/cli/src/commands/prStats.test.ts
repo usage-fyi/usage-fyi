@@ -29,7 +29,7 @@ describe("runPrStats", () => {
       expect(spy).toHaveBeenCalled();
       const output = spy.mock.calls[0]![0] as string;
       const parsed = JSON.parse(output);
-      expect(parsed.schema).toBe("pr-stats/2");
+      expect(parsed.schema).toBe("pr-stats/3");
       expect(typeof parsed.byProject).toBe("object");
     } finally {
       spy.mockRestore();
@@ -90,7 +90,7 @@ describe("runPrStats", () => {
       // All stdout must be parseable as a single JSON object
       const fullStdout = logs.join("\n");
       const parsed = JSON.parse(fullStdout);
-      expect(parsed.schema).toBe("pr-stats/2");
+      expect(parsed.schema).toBe("pr-stats/3");
       // No diagnostic noise on stdout
       expect(logs).toHaveLength(1);
     } finally {

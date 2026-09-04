@@ -363,3 +363,164 @@ describe("slim() — legacy raw without modelBreakdowns falls back gracefully", 
     assertInvariants(snap);
   });
 });
+
+// ─── exact per-agent attribution (ccusage --by-agent) ────────────────────────
+
+describe("slim() — exact attribution from daily[].agents[]", () => {
+  /**
+   * Same model used by two different harnesses on the same day. Under the
+   * legacy heuristic this was ambiguous and got split evenly; with
+   * `--by-agent` ccusage tells us the real split, so the numbers must be
+   * carried through verbatim rather than halved.
+   */
+  const raw: RawCcusage = {
+    daily: [
+      {
+        period: "2026-08-01",
+        modelsUsed: ["claude-sonnet-5", "gpt-5.5"],
+        inputTokens: 1000,
+        outputTokens: 300,
+        cacheCreationTokens: 40,
+        cacheReadTokens: 8000,
+        totalTokens: 9340,
+        totalCost: 6.0,
+        metadata: { agents: ["claude", "opencode"] },
+        modelBreakdowns: [
+          {
+            modelName: "claude-sonnet-5",
+            inputTokens: 900,
+            outputTokens: 250,
+            cacheCreationTokens: 40,
+            cacheReadTokens: 7000,
+            cost: 5,
+          },
+          {
+            modelName: "gpt-5.5",
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 1000,
+            cost: 1,
+          },
+        ],
+        agents: [
+          {
+            agent: "claude",
+            modelBreakdowns: [
+              {
+                modelName: "claude-sonnet-5",
+                inputTokens: 700,
+                outputTokens: 200,
+                cacheCreationTokens: 40,
+                cacheReadTokens: 6000,
+                cost: 4,
+              },
+            ],
+          },
+          {
+            agent: "opencode",
+            modelBreakdowns: [
+              {
+                modelName: "claude-sonnet-5",
+                inputTokens: 200,
+                outputTokens: 50,
+                cacheCreationTokens: 0,
+                cacheReadTokens: 1000,
+                cost: 1,
+              },
+              {
+                modelName: "gpt-5.5",
+                inputTokens: 100,
+                outputTokens: 50,
+                cacheCreationTokens: 0,
+                cacheReadTokens: 1000,
+                cost: 1,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    // Deliberately contradicts agents[] — the exact payload must win.
+    perAgent: { claude: { daily: [{ date: "2026-08-01", modelsUsed: ["gpt-5.5"] }] } },
+  };
+
+  const snap = slim(raw, { origin: "tool-collected", generatedAt: FIXED_TS });
+  const day = snap.daily[0]!;
+
+  it("emits one mb entry per (agent, model) pair", () => {
+    expect(day.mb).toHaveLength(3);
+    expect(day.mb.map((e) => `${e.a}/${e.m}`)).toEqual([
+      "claude/claude-sonnet-5",
+      "opencode/claude-sonnet-5",
+      "opencode/gpt-5.5",
+    ]);
+  });
+
+  it("carries the real split verbatim instead of splitting evenly", () => {
+    const claude = day.mb.find((e) => e.a === "claude")!;
+    expect(claude.i).toBe(700);
+    expect(claude.o).toBe(200);
+    expect(claude.cr).toBe(6000);
+    expect(claude.c).toBe(4);
+    // An even split of the model's 900 input tokens would have been 450.
+    expect(claude.i).not.toBe(450);
+  });
+
+  it("ignores the per-agent probe lookup when agents[] is present", () => {
+    // perAgent claims claude used gpt-5.5; agents[] says otherwise.
+    expect(day.mb.some((e) => e.a === "claude" && e.m === "gpt-5.5")).toBe(false);
+  });
+
+  it("derives day totals as the exact sum of the agent rows", () => {
+    expect(day.i).toBe(1000);
+    expect(day.o).toBe(300);
+    expect(day.cc).toBe(40);
+    expect(day.cr).toBe(8000);
+    expect(day.t).toBe(9340);
+    expect(day.c).toBe(6);
+  });
+
+  it("lists every agent that actually used tokens", () => {
+    expect(day.a).toEqual(["claude", "opencode"]);
+    expect(day.m).toEqual(["claude-sonnet-5", "gpt-5.5"]);
+  });
+
+  it("satisfies all invariants", () => {
+    assertInvariants(snap);
+  });
+});
+
+describe("slim() — agents[] fallback behaviour", () => {
+  it("falls back to the heuristic path when agents[] carries no model rows", () => {
+    const raw: RawCcusage = {
+      daily: [
+        {
+          period: "2026-08-02",
+          modelsUsed: ["claude-opus-5"],
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens: 15,
+          totalCost: 0.5,
+          metadata: { agents: ["claude"] },
+          modelBreakdowns: [
+            {
+              modelName: "claude-opus-5",
+              inputTokens: 10,
+              outputTokens: 5,
+              cost: 0.5,
+            },
+          ],
+          agents: [{ agent: "claude", modelBreakdowns: [] }],
+        },
+      ],
+      perAgent: {},
+    };
+    const snap = slim(raw, { origin: "tool-collected", generatedAt: FIXED_TS });
+    expect(snap.daily[0]!.mb).toHaveLength(1);
+    expect(snap.daily[0]!.mb[0]!.a).toBe("claude");
+    assertInvariants(snap);
+  });
+});
