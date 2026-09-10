@@ -20,6 +20,31 @@ const fixturesDir = join(
 );
 const tokenFixturesDir = join(fixturesDir, "tokens");
 
+/**
+ * Pricing stub so these tests never spawn ccusage against the developer's
+ * real usage history -- that made them slow and timing-dependent.
+ */
+const stubPricing = () =>
+  Promise.resolve(
+    (
+      _model: string,
+      t: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheCreationTokens: number;
+        cacheReadTokens: number;
+      },
+    ) => ({
+      usd:
+        (t.inputTokens +
+          t.outputTokens +
+          t.cacheCreationTokens +
+          t.cacheReadTokens) *
+        0.000001,
+      flag: "modeled-rate" as const,
+    }),
+  );
+
 describe("analyzePRStats", () => {
   it("returns empty report when directories do not exist", async () => {
     const report = await analyzePRStats({
@@ -37,6 +62,7 @@ describe("analyzePRStats", () => {
       claudeProjectsDir: fixturesDir,
       codexSessionsDir: fixturesDir,
       gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
     });
 
     // We should have events from the fixture files that have PRs.
@@ -60,6 +86,7 @@ describe("analyzePRStats", () => {
       claudeProjectsDir: fixturesDir,
       codexSessionsDir: fixturesDir,
       gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
     });
 
     // There should be at least one project with stats.
@@ -83,6 +110,7 @@ describe("analyzePRStats", () => {
       claudeProjectsDir: fixturesDir,
       codexSessionsDir: fixturesDir,
       gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
     });
 
     expect(Array.isArray(report.bySession)).toBe(true);
@@ -98,6 +126,7 @@ describe("analyzePRStats", () => {
       claudeProjectsDir: fixturesDir,
       codexSessionsDir: fixturesDir,
       gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
     });
 
     const evs = report.events;
@@ -117,6 +146,7 @@ describe("analyzePRStats", () => {
       claudeProjectsDir: fixturesDir,
       codexSessionsDir: fixturesDir,
       gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
     });
 
     const keys = Object.keys(report.byProject);
@@ -263,6 +293,7 @@ describe("reconciliation — token fixture totals match ccusage-derived expectat
       claudeProjectsDir: tokenFixturesDir,
       codexSessionsDir: tokenFixturesDir,
       gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
     });
 
     expect(report.schema).toBe("pr-stats/3");

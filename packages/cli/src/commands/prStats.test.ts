@@ -15,6 +15,31 @@ const fixturesDir = join(
   "__fixtures__",
 );
 
+/**
+ * Pricing stub so these tests never spawn ccusage against the developer's
+ * real usage history -- that made them slow and timing-dependent.
+ */
+const stubPricing = () =>
+  Promise.resolve(
+    (
+      _model: string,
+      t: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheCreationTokens: number;
+        cacheReadTokens: number;
+      },
+    ) => ({
+      usd:
+        (t.inputTokens +
+          t.outputTokens +
+          t.cacheCreationTokens +
+          t.cacheReadTokens) *
+        0.000001,
+      flag: "modeled-rate" as const,
+    }),
+  );
+
 describe("runPrStats", () => {
   it("outputs JSON report when --json is passed", async () => {
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -24,6 +49,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       expect(code).toBe(0);
       expect(spy).toHaveBeenCalled();
@@ -44,6 +70,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       expect(code).toBe(0);
       expect(spy).toHaveBeenCalled();
@@ -85,6 +112,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       expect(code).toBe(0);
       // All stdout must be parseable as a single JSON object
@@ -107,6 +135,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       expect(code).toBe(0);
       const output = spy.mock.calls[0]![0] as string;
@@ -127,6 +156,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       expect(code).toBe(0);
       const output = spy.mock.calls[0]![0] as string;
@@ -146,6 +176,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       expect(code).toBe(0);
       const output = spy.mock.calls[0]![0] as string;
@@ -165,6 +196,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       expect(code).toBe(0);
       const output = spy.mock.calls[0]![0] as string;
@@ -187,6 +219,7 @@ describe("runPrStats", () => {
         claudeProjectsDir: fixturesDir,
         codexSessionsDir: fixturesDir,
         gitRootResolver: async (cwd) => cwd,
+        loadPricing: stubPricing,
       });
       // Either exits 0 with empty events (no match) or exits 1 with error
       // The fixture data likely doesn't have PR #99999, so no multi-project ambiguity
