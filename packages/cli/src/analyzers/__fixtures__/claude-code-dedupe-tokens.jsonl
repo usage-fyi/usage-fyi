@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-05-28T13:00:00.000Z","cwd":"/Users/alice/work/myrepo"}
+{"type":"assistant","timestamp":"2026-05-28T13:01:00.000Z","requestId":"req-dup-001","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"cwd":"/Users/alice/work/myrepo"}
+{"type":"assistant","timestamp":"2026-05-28T13:02:00.000Z","requestId":"req-dup-001","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"cwd":"/Users/alice/work/myrepo"}
+{"type":"assistant","timestamp":"2026-05-28T13:03:00.000Z","requestId":"req-dup-002","message":{"model":"claude-opus-4-8","usage":{"input_tokens":20,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"cwd":"/Users/alice/work/myrepo"}

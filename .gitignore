@@ -11,3 +11,5 @@ dist/
 .env
 .env.*
 !.env.example
+.harness/run.lock
+.harness/runs/

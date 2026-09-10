@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-06-10T15:00:00.000Z","cwd":"/Users/alice/work/fixture-unknown"}
+{"type":"assistant","timestamp":"2026-06-10T15:05:00.000Z","requestId":"req-uk1","message":{"model":"claude-mystery","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"cwd":"/Users/alice/work/fixture-unknown"}
+{"type":"pr-link","sessionId":"session-unknown-001","prNumber":600,"prUrl":"https://github.com/fixture/repo/pull/600","prRepository":"fixture/repo","timestamp":"2026-06-10T15:30:00.000Z"}

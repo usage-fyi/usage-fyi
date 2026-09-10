@@ -1,0 +1,2 @@
+{"type":"session_meta","session_id":"codex-session-001","cwd":"/Users/alice/work/myrepo"}
+{"type":"response_item","timestamp":"2026-05-28T09:00:00.000Z","payload":{"output":"Here is the PR:\nhttps://github.com/owner/repo/pull/123"}}

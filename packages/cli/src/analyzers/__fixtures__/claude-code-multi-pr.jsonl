@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-05-28T06:00:00.000Z","cwd":"/Users/alice/work/myrepo"}
+{"type":"pr-link","sessionId":"session-def-456","prNumber":1,"prUrl":"https://github.com/owner/repo/pull/1","prRepository":"owner/repo","timestamp":"2026-05-28T06:10:00.000Z"}
+{"type":"pr-link","sessionId":"session-def-456","prNumber":2,"prUrl":"https://github.com/owner/repo/pull/2","prRepository":"owner/repo","timestamp":"2026-05-28T06:15:00.000Z"}
+{"type":"pr-link","sessionId":"session-def-456","prNumber":1,"prUrl":"https://github.com/owner/repo/pull/1","prRepository":"owner/repo","timestamp":"2026-05-28T06:20:00.000Z"}
+{"type":"assistant","timestamp":"2026-05-28T06:25:00.000Z","cwd":"/Users/alice/work/myrepo"}

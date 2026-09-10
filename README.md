@@ -54,8 +54,11 @@ npx usage-fyi --preview
 # Generate a shareable card and open it in your browser
 npx usage-fyi
 
-# Emit JSON for piping into other tools — no network call, no browser
+# Publish and print the result as JSON, without opening a browser
 npx usage-fyi --no-open --json
+
+# Per-PR and per-session token attribution, entirely local
+npx usage-fyi pr-stats --since 2026-08-01
 ```
 
 ---
@@ -70,6 +73,50 @@ npx usage-fyi --no-open --json
 | `--no-open` | open | Do not open the published link in a browser |
 | `--version` | — | Print version and exit |
 | `--help` | — | Print help |
+
+`--json` still publishes; it only changes how the result is printed. Use
+`--preview` when you want nothing to leave your machine.
+
+### `pr-stats`
+
+Correlates pull requests created during agent sessions with the tokens spent
+getting there. Reads local session logs only, never publishes.
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Emit the full `pr-stats/3` report instead of a table |
+| `--by <event\|session>` | Group the table by PR event or by session |
+| `--since <date>` | Only PRs created on or after this date |
+| `--project <path>` | Restrict to one project root |
+| `--pr <url\|#n\|n>` | Restrict to a single pull request |
+
+---
+
+## 🎯 Accuracy
+
+Numbers come from [`ccusage`](https://www.npmjs.com/package/ccusage), which is
+pinned to an exact version so a given set of logs always produces the same
+report.
+
+- **Attribution is exact, not inferred.** Agent and model splits are read
+  straight from `ccusage daily --json --by-agent`. Earlier releases probed each
+  agent separately and split shared models evenly when two harnesses used the
+  same model on the same day; that guesswork is gone.
+- **Costs are charged per token type.** Input, output, cache-creation and
+  cache-read tokens have very different prices, so `pr-stats` recovers each
+  model's four rates from your own `ccusage` history and prices every window
+  against its real token mix. A cache-heavy window is no longer billed as if
+  it were output.
+- **Estimates say how they were made.** Every cost carries a `pricingFlag`:
+  `modeled-rate` (per-token-type rates), `blended-rate` (a single averaged
+  $/token rate, used when a model has too little history to fit), or
+  `unknown-model` (no rate at all, cost reported as `null` rather than
+  guessed).
+- **`ccusage` warnings are surfaced**, so a model it cannot price shows up on
+  stderr instead of silently contributing $0.
+
+Costs are estimates of API-equivalent spend. They are not a bill, and they
+cover only the machine you run them on.
 
 ---
 
@@ -88,7 +135,9 @@ src/
 ├── style.ts          # Style resolution
 ├── errors.ts         # Exit codes and error formatting
 ├── core/             # Zero-dep snapshot schema, hashing, validation
-└── adapters/         # Usage-source adapters (ccusage, extensible)
+├── adapters/         # Usage-source adapters (ccusage, extensible)
+├── analyzers/        # pr-stats: session scanners, windowing, aggregation
+└── commands/         # Subcommand entry points
 ```
 
 ---

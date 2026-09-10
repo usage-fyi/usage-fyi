@@ -1,10 +1,18 @@
 import { DEFAULT_SOURCE } from "./adapters/registry.js";
 
+export type Command = "publish" | "pr-stats";
+
 export interface ParsedArgs {
+  command: Command;
   source: string;
   json: boolean;
   open: boolean;
   preview: boolean;
+  // pr-stats flags:
+  by: "event" | "session";
+  pr: string | null;
+  since: string | null;
+  project: string | null;
 }
 
 export class LaterPhaseError extends Error {
@@ -34,7 +42,11 @@ export class VersionRequestedError extends Error {
   }
 }
 
-const CLI_VERSION = "0.1.2";
+/**
+ * Printed by `--version`. Must match the `version` field in package.json --
+ * a test in test/args.test.ts fails the build if the two ever drift.
+ */
+const CLI_VERSION = "0.2.0";
 
 export const HELP_TEXT = `\
 usage-fyi — publish your AI coding-agent usage as a shareable card
@@ -49,6 +61,23 @@ Options:
   --preview          Render the card locally and serve it on a localhost port; share is one click
   --version          Print version and exit
   --help             Print this help
+
+Commands:
+  pr-stats           Show per-project PR creation stats from local session files
+`;
+
+export const PR_STATS_HELP_TEXT = `\
+usage-fyi pr-stats — per-project PR creation stats from local session files
+
+  bunx usage-fyi pr-stats
+
+Options:
+  --by <event|session>   Group output by event (default) or session
+  --pr <url|number>      Filter to a single PR by full URL, number, or #number
+  --since <date>         Filter to events on or after this date (ISO or yyyy-mm-dd)
+  --project <path>       Filter to events in this project directory
+  --json                 Output raw JSON report
+  --help                 Print this help
 `;
 
 function nextValue(argv: string[], i: number, flag: string): string {
@@ -61,32 +90,83 @@ function nextValue(argv: string[], i: number, flag: string): string {
 
 export function parseArgs(argv: string[]): ParsedArgs {
   const args: ParsedArgs = {
+    command: "publish",
     source: DEFAULT_SOURCE,
     json: false,
     open: true,
     preview: false,
+    by: "event",
+    pr: null,
+    since: null,
+    project: null,
   };
 
   let i = 0;
+
+  // Detect subcommand before flag parsing
+  if (i < argv.length && !argv[i]!.startsWith("-")) {
+    const cmd = argv[i]!;
+    if (cmd === "pr-stats") {
+      args.command = "pr-stats";
+      i++;
+    } else {
+      throw new Error(`Unknown command: ${cmd}`);
+    }
+  }
+
   while (i < argv.length) {
     const arg = argv[i]!;
     switch (arg) {
       case "--help":
-      case "-h":
-        throw new HelpRequestedError(HELP_TEXT);
+      case "-h": {
+        const text =
+          args.command === "pr-stats" ? PR_STATS_HELP_TEXT : HELP_TEXT;
+        throw new HelpRequestedError(text);
+      }
       case "--version":
         throw new VersionRequestedError(CLI_VERSION);
       case "--json":
         args.json = true;
         break;
       case "--no-open":
+        if (args.command === "pr-stats") throw new Error("Unknown flag: --no-open");
         args.open = false;
         break;
       case "--preview":
+        if (args.command === "pr-stats") throw new Error("Unknown flag: --preview");
         args.preview = true;
         break;
       case "--source": {
+        if (args.command === "pr-stats") throw new Error("Unknown flag: --source");
         args.source = nextValue(argv, i, "source");
+        i++;
+        break;
+      }
+      case "--by": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --by");
+        const val = nextValue(argv, i, "by");
+        if (val !== "event" && val !== "session") {
+          throw new Error(`--by must be "event" or "session", got: ${val}`);
+        }
+        args.by = val;
+        i++;
+        break;
+      }
+      case "--pr": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --pr");
+        args.pr = nextValue(argv, i, "pr");
+        i++;
+        break;
+      }
+      case "--since": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --since");
+        args.since = nextValue(argv, i, "since");
+        i++;
+        break;
+      }
+      case "--project": {
+        if (args.command !== "pr-stats") throw new Error("Unknown flag: --project");
+        args.project = nextValue(argv, i, "project");
         i++;
         break;
       }

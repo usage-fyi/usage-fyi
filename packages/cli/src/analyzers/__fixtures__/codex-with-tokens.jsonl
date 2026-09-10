@@ -1,0 +1,4 @@
+{"type":"session_meta","session_id":"codex-tok-001","cwd":"/Users/alice/work/myrepo","model":"gpt-4o"}
+{"type":"event_msg","timestamp":"2026-05-28T16:00:00.000Z","payload":{"type":"token_count","total_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":30,"reasoning_output_tokens":0}}}
+{"type":"response_item","timestamp":"2026-05-28T16:01:00.000Z","payload":{"output":"Here is the PR:\nhttps://github.com/owner/repo/pull/5"}}
+{"type":"event_msg","timestamp":"2026-05-28T16:02:00.000Z","payload":{"type":"token_count","total_token_usage":{"input_tokens":200,"cached_input_tokens":80,"output_tokens":60,"reasoning_output_tokens":5}}}

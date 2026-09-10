@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-05-28T08:00:00.000Z","cwd":"/Users/alice/work/myrepo"}
+this is not json
+{"type":"pr-link","sessionId":"session-mal-001","prNumber":7,"prUrl":"https://github.com/owner/repo/pull/7","prRepository":"owner/repo","timestamp":"2026-05-28T08:10:00.000Z"}
