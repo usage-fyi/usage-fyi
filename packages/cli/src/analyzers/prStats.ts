@@ -89,7 +89,25 @@ export interface AnalyzePRStatsOpts {
   since?: string; // ISO or yyyy-mm-dd — filter events to prTimestamp >= since
   project?: string; // canonical project path — filter to this project
   pr?: string; // PR URL, "#N", or "N" — filter to a single PR
+  /**
+   * Pricing function to cost the report with. Defaults to deriving rates
+   * from `ccusage daily --json`, which spawns a subprocess and reads the
+   * caller's whole usage history. Inject a stub to keep a test hermetic and
+   * off the real data.
+   */
+  loadPricing?: () => Promise<PricingFn>;
 }
+
+/** Signature of the pricing function analyzePRStats() costs a report with. */
+export type PricingFn = (
+  model: string,
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  },
+) => { usd: number | null; flag?: PricingFlag };
 
 export interface FormatTableOpts {
   by?: "event" | "session";
@@ -418,7 +436,8 @@ export async function analyzePRStats(
   // Pricing costs a ccusage subprocess, so only pay for it once we know
   // there is something to price.
   const needsPricing = sessionDataList.some((sd) => sd.tokens.length > 0);
-  const pricingFn = needsPricing ? await loadPricingFn() : undefined;
+  const loadPricing = opts.loadPricing ?? loadPricingFn;
+  const pricingFn = needsPricing ? await loadPricing() : undefined;
 
   const windowResults: WindowSessionResult[] = sessionDataList.map((sd) =>
     windowSession({

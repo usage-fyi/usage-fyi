@@ -13,6 +13,8 @@ export interface RunPrStatsOpts {
   claudeProjectsDir?: string;
   codexSessionsDir?: string;
   gitRootResolver?: (cwd: string) => Promise<string | null>;
+  /** Injected in tests to avoid spawning ccusage against real usage data. */
+  loadPricing?: AnalyzePRStatsOpts["loadPricing"];
 }
 
 export async function runPrStats(opts: RunPrStatsOpts): Promise<number> {
@@ -34,6 +36,9 @@ export async function runPrStats(opts: RunPrStatsOpts): Promise<number> {
   }
   if (opts.pr != null) {
     analyzeOpts.pr = opts.pr;
+  }
+  if (opts.loadPricing !== undefined) {
+    analyzeOpts.loadPricing = opts.loadPricing;
   }
 
   let report;
